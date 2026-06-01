@@ -15,6 +15,22 @@ The catalog describes:
 - evidence collection rules;
 - maturity and documentation status.
 
+### How the App Learns What the Platform Provides
+
+The app only knows what is registered in the catalog. There are three realistic sources:
+
+| Source | What it covers | When to use |
+|---|---|---|
+| **Manual YAML** | Everything; required for reinvention anti-patterns | Always needed for anti-patterns; sufficient for MVP |
+| **Artifact registry import** (Phase 2) | Platform-published packages → adoption signals auto-populated | When platform publishes to Artifactory, private PyPI, or internal Maven |
+| **Developer portal import** (Phase 2) | Capability metadata from Backstage/Cortex/OpsLevel | When the org already maintains a service/capability catalog |
+
+For MVP, catalog entries are written manually by the platform team. This is intentional: it forces explicit definition of what counts as adoption and what counts as reinvention, rather than relying on inference.
+
+**Anti-patterns always require manual curation.** There is no way to auto-derive what a custom reimplementation looks like. A platform team member must define this knowledge explicitly.
+
+For Phase 2, a `CatalogBootstrapper` can query the internal artifact registry to auto-generate skeleton entries with adoption signals pre-filled. The platform team then reviews and completes the anti-pattern and eligibility sections before promoting status from `draft` to `active`.
+
 ## 2. Two-Tier Detection Model
 
 Not every platform capability has to be manually cataloged before the system provides value. Detection works in two tiers:
@@ -104,6 +120,7 @@ owner_team: platform-data
 status: stable
 maturity: stable
 catalog_version: "1.0"
+source: manual           # manual | auto_generated | imported — tracks how this entry was created
 description: Standard platform capability for authenticating to Snowflake.
 documentation_url: https://internal/docs/snowflake-auth
 recommended_for:
@@ -209,13 +226,33 @@ EXEMPT:
 
 Recommended lifecycle states:
 
-- `draft`: proposed capability, not ready for tenant adoption;
-- `beta`: available to early adopters;
-- `stable`: recommended for broad adoption;
-- `deprecated`: should not be adopted by new tenants;
-- `retired`: no longer supported.
+- `draft`: entry created (manually or auto-generated) but not yet reviewed or activated; excluded from all scoring.
+- `beta`: available to early adopters; included in adoption scoring.
+- `stable`: recommended for broad adoption; included in adoption scoring.
+- `deprecated`: should not be adopted by new tenants; still included in scoring to track remaining usage.
+- `retired`: no longer supported; excluded from adoption scoring.
 
-Only `beta` and `stable` capabilities should normally be included in adoption scoring.
+Only `beta` and `stable` capabilities are included in adoption rate calculations.
+
+### Auto-Generated Entry Example (Phase 2)
+
+When a `CatalogBootstrapper` queries the internal artifact registry, it produces skeleton entries like this:
+
+```yaml
+capability_id: platform-kafka-client
+name: platform-kafka-client
+source: auto_generated
+status: draft              # excluded from scoring until reviewed and promoted
+auto_generated_at: "2026-06-01"
+approved_usage_patterns:
+  dependencies:
+    - pattern: "platform-kafka-client"
+      weight: high         # auto-populated from package name in artifact registry
+anti_patterns: []          # REQUIRES HUMAN COMPLETION before promotion to beta/stable
+eligibility_rules: []      # REQUIRES HUMAN COMPLETION before promotion to beta/stable
+```
+
+The platform team reviews auto-generated entries, adds anti-patterns and eligibility rules, then changes status to `beta` or `stable` to activate detection.
 
 ## 5. Detection Signal Types
 

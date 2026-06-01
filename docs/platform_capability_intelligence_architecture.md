@@ -75,6 +75,18 @@ Defines the reusable platform capabilities and the detection rules used to ident
 
 See `capability_catalog.md`.
 
+#### How the catalog is populated
+
+The app only knows what platform capabilities exist if they are registered in the catalog. There are three paths:
+
+**MVP — Manual YAML**: The platform team writes `catalog.yaml` directly. Required for anti-patterns and eligibility rules in all versions. Status `draft` entries are excluded from scoring until reviewed and promoted.
+
+**Phase 2 — CatalogBootstrapper**: A utility that queries the internal artifact registry (Artifactory, private PyPI, internal Maven) to discover platform-published packages and auto-generates skeleton catalog entries with adoption signals pre-filled. Anti-patterns and eligibility rules still require human completion. Entries start as `draft` and are activated by the platform team.
+
+**Phase 2 — Developer Portal Import**: If the organization uses Backstage, Cortex, OpsLevel, or a similar internal developer portal, catalog metadata can be imported from there, reducing duplication.
+
+The `source` field on each capability entry (`manual | auto_generated | imported`) tracks how it was created.
+
 ### 4.2 Repo Source Adapter
 
 Fetches source code for analysis.

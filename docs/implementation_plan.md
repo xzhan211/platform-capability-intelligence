@@ -47,7 +47,7 @@ Acceptance criteria:
 
 Scope:
 
-- `Capability` (from catalog: id, name, category, maturity, signal weights, eligibility rules, evidence rules).
+- `Capability` (from catalog: id, name, category, maturity, status, source: manual|auto_generated|imported, signal weights, eligibility rules, evidence rules).
 - `Tenant` (tenant_id, tenant_name, owner_group).
 - `Repository` (repo_id, tenant_id, repo_name, source_type, language_stack).
 - `ScanRun` (scan_run_id, scan_batch_id, catalog_version, status, timestamps).
@@ -862,7 +862,9 @@ Every PR should answer:
 - Bitbucket source adapter.
 - Second capability in catalog.
 - Git history / churn × reinvention temporal signal.
-- Backstage / developer portal integration.
+- **CatalogBootstrapper**: queries internal artifact registry (Artifactory, private PyPI, internal Maven) to auto-generate `draft` catalog entries with adoption signals pre-filled. Anti-patterns and eligibility rules still require human completion. Reduces manual catalog bootstrapping effort for large capability sets.
+- **Developer portal catalog import**: import capability metadata from Backstage, Cortex, OpsLevel, or similar if the org already uses one. Avoids duplicate definition.
+- Backstage / developer portal display integration (surface adoption metrics in the portal).
 - Exception/EXEMPT management UI (data model is ready).
 - LLM-as-judge soft evaluator.
 - Portfolio-scale multi-capability reporting.
