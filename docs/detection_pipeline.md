@@ -25,29 +25,53 @@ Input Repositories
 
 ## 3. Stage 1: Input Repositories
 
-MVP input:
+### MVP Input: Scan Manifest + Repo Archives
 
-- local uploaded repo archive;
-- optional metadata file mapping repo to tenant.
+The MVP uses a `scan_manifest.yaml` file alongside a folder of repository archives.
 
-Future input:
-
-- Bitbucket archive download;
-- Bitbucket clone;
-- scheduled cross-repo scans;
-- repository metadata from internal inventory systems.
-
-Required metadata:
-
-```text
-repo_id
-repo_name
-tenant_id
-source_type
-branch optional
-commit_sha optional
-scan_timestamp
+```bash
+platform-capability scan \
+  --manifest ./demo-repos/scan_manifest.yaml \
+  --catalog ./capabilities/catalog.yaml
 ```
+
+#### scan_manifest.yaml format
+
+```yaml
+scan_batch_id: demo-batch-001
+scan_timestamp: "2026-05-31T09:00:00Z"
+catalog_version: "1.0"
+
+repos:
+  - repo_id: payment-service
+    repo_name: payment-service
+    tenant_id: payments-team
+    archive: ./payment-service.zip
+    branch: main
+    commit_sha: null
+
+  - repo_id: reporting-service
+    repo_name: reporting-service
+    tenant_id: analytics-team
+    archive: ./reporting-service.zip
+    branch: main
+    commit_sha: null
+
+  - repo_id: reconciliation-service
+    repo_name: reconciliation-service
+    tenant_id: finance-team
+    archive: ./reconciliation-service.zip
+    branch: main
+    commit_sha: null
+```
+
+The manifest provides repo identity and tenant metadata without requiring a live Bitbucket connection. Each archive is a standard zip or tar.gz.
+
+### Future Input
+
+- Bitbucket archive download (V2): same manifest format, archive is downloaded automatically.
+- Bitbucket clone (V3): shallow clone, enables diff scanning.
+- Scheduled cross-repo scans: manifest is generated from an internal repo inventory API.
 
 ## 4. Stage 2: Workspace Preparation
 
@@ -269,50 +293,119 @@ Snowflake Auth
 - adoption rate: 60%
 ```
 
-## 12. Stage 10: LLM Insight Generation
+## 12. Stage 10: LLM Insight Pipeline (Multi-Step)
 
-LLM is used to convert detected signals into readable platform insights.
+LLM is used to convert detected signals into readable platform insights. The pipeline uses three steps. LLM steps use Claude Bedrock structured output (tool use) to enforce schema. The final assembly is deterministic.
 
-Recommended MVP LLM steps:
+### Step 10.1: CrossRepoEvidenceSummary Assembly (Deterministic)
 
-### 10.1 SignalSummarizer
+Before any LLM call, the CrossRepoAggregator builds a bounded, structured summary of all detection results. This is the only input the LLM receives — it never sees raw repository content or unbounded evidence dumps.
 
-Summarizes evidence for each capability.
-
-Input:
-
-- capability catalog entry;
-- detection results;
-- evidence refs;
-- cross-repo metrics.
-
-Output:
-
-- concise capability summary;
-- adoption pattern;
-- reinvention pattern;
-- unknowns.
-
-### 10.2 InsightGenerator
-
-Generates platform-level insights and recommendations.
-
-Example output:
-
-```text
-Three eligible repositories appear to implement custom Snowflake authentication instead of using the platform capability. The strongest common pattern is direct use of Snowflake JDBC combined with custom token refresh logic. This suggests the platform Snowflake auth capability may need better onboarding documentation or migration examples.
+```json
+{
+  "capability_id": "snowflake_auth",
+  "capability_name": "Snowflake Authentication",
+  "catalog_version": "1.0",
+  "scan_batch_id": "demo-batch-001",
+  "aggregate_metrics": {
+    "eligible_repo_count": 4,
+    "adopted_count": 1,
+    "custom_implementation_count": 1,
+    "missing_count": 1,
+    "unknown_count": 1,
+    "exempt_count": 0,
+    "adoption_rate": 0.25
+  },
+  "repo_summaries": [
+    {
+      "repo_id": "payment-service",
+      "tenant_id": "payments-team",
+      "status": "ADOPTED",
+      "confidence": "high",
+      "top_evidence_refs": ["ev-001", "ev-002"]
+    },
+    {
+      "repo_id": "reporting-service",
+      "tenant_id": "analytics-team",
+      "status": "CUSTOM_IMPLEMENTATION",
+      "confidence": "high",
+      "top_evidence_refs": ["ev-010", "ev-011", "ev-012"]
+    }
+  ],
+  "common_reinvention_patterns": [
+    "snowflake-connector-python used without platform wrapper",
+    "SnowflakeTokenManager class detected"
+  ],
+  "unknowns": [
+    "legacy-analytics-service: insufficient evidence, possible custom auth in legacy module"
+  ]
+}
 ```
 
-### 10.3 ReportAssembler
+The token budget for the CrossRepoEvidenceSummary is enforced before the LLM call. If the summary exceeds the budget, lower-confidence evidence items are dropped first.
 
-Deterministically assembles the final report.
+### Step 10.2: SignalSummarizer (LLM, Structured Output)
 
-LLM text should be included only if:
+Input: CrossRepoEvidenceSummary + capability catalog entry.
 
-- evidence refs are valid;
-- capability IDs exist;
-- repo IDs exist;
-- no unsupported claims are detected.
+The LLM produces a structured per-capability signal summary.
+
+Output schema (enforced via tool use):
+
+```json
+{
+  "capability_id": "snowflake_auth",
+  "adoption_pattern_summary": "One repo uses the approved platform dependency and import. Three eligible repos do not use the approved capability.",
+  "reinvention_pattern_summary": "One repo uses snowflake-connector-python directly with a custom SnowflakeTokenManager class.",
+  "evidence_refs": ["ev-010", "ev-011"],
+  "unknowns": ["legacy-analytics-service: classification unclear"],
+  "confidence": "high"
+}
+```
+
+Hard gate check after this step: all evidence_refs must exist, capability_id must exist in catalog.
+
+### Step 10.3: InsightGenerator (LLM, Structured Output)
+
+Input: validated SignalSummarizer output + aggregate metrics.
+
+The LLM produces cross-repo platform-level insights and actionable recommendations.
+
+Output schema (enforced via tool use):
+
+```json
+{
+  "insight_summary": "The Snowflake Auth capability has a 25% adoption rate among eligible repos. One repo implements custom authentication, suggesting onboarding friction for batch-style Snowflake integrations.",
+  "recommendations": [
+    {
+      "recommendation_id": "rec-001",
+      "priority": "high",
+      "target": "reporting-service",
+      "action": "Migrate SnowflakeTokenManager to the platform-snowflake-auth library.",
+      "evidence_refs": ["ev-010", "ev-011"]
+    },
+    {
+      "recommendation_id": "rec-002",
+      "priority": "medium",
+      "target": "platform-team",
+      "action": "Add a batch-job integration example to Snowflake Auth documentation.",
+      "evidence_refs": ["ev-010"]
+    }
+  ],
+  "unknowns": ["legacy-analytics-service: follow up required to determine auth pattern"]
+}
+```
+
+Hard gate check after this step: all evidence_refs exist, all repo_ids cited exist in the scan batch, capability_ids exist in catalog, no unsupported claims.
+
+### Step 10.4: ReportAssembler (Deterministic)
+
+Assembles the final report from validated SignalSummarizer and InsightGenerator outputs.
+
+- attaches all validated evidence refs;
+- records catalog version, prompt versions, model IDs, LLM usage metadata;
+- produces `FinalReport` for the evaluator;
+- no LLM is called in this step.
 
 ## 13. Stage 11: Evaluation
 

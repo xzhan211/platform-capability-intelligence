@@ -130,53 +130,66 @@ MVP evidence selection priorities:
 
 ### 4.6 Capability Usage Classifier
 
-Classifies each repository-capability pair into one of:
+Classifies each repository-capability pair using deterministic rules driven by signal weights from the capability catalog.
 
-- `ADOPTED`
-- `CUSTOM_IMPLEMENTATION`
-- `MISSING`
-- `NOT_ELIGIBLE`
-- `UNKNOWN`
+Valid statuses:
 
-MVP classification should be primarily deterministic.
+- `ADOPTED`: at least one high-weight adoption signal, or two or more medium-weight adoption signals.
+- `CUSTOM_IMPLEMENTATION`: at least one high-weight reinvention signal, or two or more medium-weight reinvention signals; no high-weight adoption signal present.
+- `MISSING`: repo is eligible but no adoption signals and reinvention signals are below threshold.
+- `NOT_ELIGIBLE`: no eligibility rule matched.
+- `UNKNOWN`: insufficient evidence for any determination.
+- `EXEMPT`: repo has a valid, non-expired entry in the exceptions list. Excluded from adoption rate denominator. Shown separately in the dashboard.
 
-Example:
+Example for Snowflake Auth (Python repos):
 
 ```text
-If repo uses net.snowflake:snowflake-jdbc and does not use platform-snowflake-auth,
-and custom token refresh logic is detected, classify as CUSTOM_IMPLEMENTATION.
+requirements.txt contains snowflake-connector-python (high-weight reinvention signal)
+  AND no platform-snowflake-auth dependency
+  AND SnowflakeTokenManager.py detected (high-weight reinvention signal)
+  -> CUSTOM_IMPLEMENTATION / high confidence
 ```
 
-### 4.7 Cross-Repo Metrics Engine
+### 4.7 Cross-Repo Metrics Engine and CrossRepoEvidenceSummary
 
-Aggregates repository-level classification into platform-level metrics:
+Aggregates repository-level classifications into two outputs:
 
-- capability adoption rate;
-- eligible tenant coverage;
+**CrossRepoMetric** (stored, displayed in dashboard):
+
+- capability adoption rate (adopted eligible / total eligible; EXEMPT excluded from denominator);
 - custom implementation count;
 - missing adoption count;
-- adoption trend over time;
-- tenant capability coverage;
-- platform stickiness indicators.
+- unknown count;
+- exempt count;
+- adoption trend over time (Phase 2, requires history).
+
+**CrossRepoEvidenceSummary** (bounded structure passed to LLM pipeline):
+
+- aggregate metrics;
+- per-repo status + confidence + top evidence refs;
+- common reinvention patterns across repos;
+- unknowns list.
+
+The CrossRepoEvidenceSummary is the only input passed to LLM steps. It is bounded by a token budget and assembled deterministically. See detection_pipeline.md Stage 10 for the full schema.
 
 ### 4.8 LLM Insight Pipeline
 
-LLM is used for synthesis, ambiguity resolution, and narrative reporting.
-
-Recommended MVP pipeline:
+LLM is used for synthesis and narrative reporting. The pipeline is multi-step. LLM steps use Claude Bedrock structured output (tool use) to enforce schema. The final assembly is deterministic.
 
 ```text
-SignalSummarizer
-    -> Converts detected evidence into capability-level summaries.
-
-InsightGenerator
-    -> Generates cross-repo insights and recommendations.
-
-ReportAssembler
-    -> Deterministically assembles the final report with evidence refs.
+CrossRepoEvidenceSummary (deterministic, bounded)
+    -> SignalSummarizer (LLM, structured output)
+    -> Hard gate validation (deterministic)
+    -> InsightGenerator (LLM, structured output)
+    -> Hard gate validation (deterministic)
+    -> ReportAssembler (deterministic, no LLM)
 ```
 
-LLM must not invent capabilities, repositories, tenant names, or usage patterns that do not appear in the evidence package.
+LLM must not invent capabilities, repositories, tenant names, or usage patterns that do not appear in the CrossRepoEvidenceSummary.
+
+Tool use reduces format failures. Semantic validation (evidence refs, capability IDs, repo IDs) is still enforced by the hard gate evaluator after each LLM step.
+
+See detection_pipeline.md Stage 10 for full step-by-step input/output schemas.
 
 ### 4.9 Evaluator / Validator
 
@@ -244,11 +257,13 @@ scan_run_id
 repo_id
 tenant_id
 capability_id
-status: ADOPTED | CUSTOM_IMPLEMENTATION | MISSING | NOT_ELIGIBLE | UNKNOWN
-confidence
+status: ADOPTED | CUSTOM_IMPLEMENTATION | MISSING | NOT_ELIGIBLE | UNKNOWN | EXEMPT
+confidence: high | medium | low | unknown
 rule_version
+catalog_version
 evidence_refs[]
 unknowns[]
+exempt_reason (populated when status = EXEMPT)
 ```
 
 ### EvidenceItem
@@ -316,21 +331,28 @@ Step Functions is not required for MVP. It becomes useful when the scan workflow
 
 MVP should support:
 
-- local repo archive upload;
-- small capability catalog;
-- one or two capabilities, preferably Snowflake authentication first;
-- deterministic detection rules;
-- evidence-backed classification;
+- multi-repo scan via `scan_manifest.yaml` + folder of archives (local upload);
+- one capability in the catalog (specific capability TBD by team);
+- Python repository detection (requirements.txt, imports, config files, class/function name patterns);
+- manually maintained YAML capability catalog with signal weights;
+- deterministic eligibility, adoption signal, and reinvention signal detection;
+- evidence-backed classification: ADOPTED / CUSTOM_IMPLEMENTATION / MISSING / NOT_ELIGIBLE / UNKNOWN / EXEMPT;
+- CrossRepoEvidenceSummary as bounded LLM input;
+- LLM insight pipeline (SignalSummarizer → InsightGenerator → ReportAssembler) with hard gate validation;
 - simple cross-repo adoption dashboard;
-- LLM-generated insight with evidence validation;
+- evidence drill-down from classification to source evidence;
 - exportable report.
+
+The detector interfaces are language-agnostic. Adding Java detection in Phase 2 requires only new detector implementations, not architecture changes.
 
 MVP should defer:
 
+- Java detection;
 - Bitbucket integration;
 - git history/churn analysis;
-- portfolio-scale reporting;
+- portfolio-scale multi-capability reporting;
 - automated migration recommendations;
-- policy enforcement;
-- release gates;
-- full enterprise scanner integration.
+- policy enforcement or release gates;
+- Backstage/developer portal integration;
+- LLM-as-judge soft evaluation;
+- exception/exempt UI management (data model supports it; UI deferred).
