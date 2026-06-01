@@ -176,6 +176,125 @@ Recommended LLM output requirements:
 
 Tool use or structured output reduces formatting failures but does not eliminate the need for semantic validation.
 
+## 8a. Retry and Repair Strategy
+
+### Why Retry Is Needed Here
+
+This platform uses Claude Bedrock tool use (structured output) for every LLM step. Tool use enforces JSON schema at the API level, eliminating most format failures. However, the LLM can still produce semantically invalid output:
+
+- citing a `repo_id` that does not exist in the scan batch;
+- citing a `capability_id` not present in the catalog;
+- citing an `evidence_ref` that was not in the CrossRepoEvidenceSummary;
+- mentioning a tenant name, file path, or class name not in the input;
+- generating a recommendation with no supporting evidence.
+
+These semantic failures are caught by the hard gate evaluator and trigger a targeted repair prompt.
+
+### When to Retry vs. Accept vs. Fall Back
+
+```text
+RETRY when:
+  - Any evidence_ref cited does not exist in the evidence package.
+  - Any capability_id cited does not exist in the catalog.
+  - Any repo_id cited does not exist in the scan batch.
+  - Any hallucinated tenant name, class name, or file path is detected.
+  - Required schema fields are missing (rare with tool use).
+  - Output is empty or unusably short.
+
+ACCEPT_WITH_WARNING when:
+  - All hard gates pass.
+  - Evidence coverage is below threshold (some insights lack evidence_refs).
+  - Unknowns are not explicitly listed.
+  - Recommendation specificity is low.
+
+FALLBACK_TO_DETERMINISTIC_REPORT when:
+  - LLM fails all retries.
+  - LLM provider is unavailable.
+  - All retries produce hallucinated references.
+
+The scan should still complete if the deterministic detection pipeline succeeded.
+The deterministic report (classifications, evidence items, cross-repo metrics) is
+always produced before the LLM step and is always available as the fallback.
+```
+
+### Max Retry Count
+
+```text
+max_retry = 2   (configurable)
+```
+
+Each retry attempt must store:
+
+- failure reason (which hard gate failed);
+- repair prompt type used;
+- attempt number;
+- raw failed LLM output URI (for debugging and prompt improvement).
+
+### Repair Prompt Strategy
+
+Retry should not resend the same prompt. Use a targeted repair prompt matched to the failure type.
+
+#### Grounding Repair
+
+Use when evidence_refs, capability_ids, or repo_ids cited in LLM output do not exist in the input.
+
+Prompt intent:
+
+```text
+Your previous output referenced items that were not in the provided input.
+Specifically: {list of invalid references}.
+
+Regenerate your response using ONLY the following:
+- Capability IDs from the catalog: {capability_ids}
+- Repo IDs from the scan batch: {repo_ids}
+- Evidence refs from the CrossRepoEvidenceSummary: {evidence_ref_ids}
+
+Do not mention any repository, tenant, capability, file, or class name
+that does not appear in the input above.
+```
+
+This is the most common repair needed. The LLM is given the exact valid IDs it is allowed to use.
+
+#### Schema Repair
+
+Use when required fields are missing or field values violate the schema (rare with tool use enforced).
+
+Prompt intent:
+
+```text
+Your previous output was missing required fields or had invalid values.
+Validation errors: {error list}.
+
+Regenerate using exactly the required schema. Every recommendation must
+include recommendation_id, priority, target, action, and evidence_refs.
+```
+
+#### Scope Repair
+
+Use when LLM output makes claims outside the scope of the advisory-only product boundary (e.g., "this repo must be blocked" or "this is a compliance violation").
+
+Prompt intent:
+
+```text
+Your previous output made claims outside the advisory scope of this platform.
+This platform provides observations and recommendations only. It does not
+enforce policy, block releases, or make compliance determinations.
+
+Rewrite your response using advisory language only:
+- Use "appears to implement" rather than "violates".
+- Use "recommend reviewing" rather than "must be changed".
+- Do not reference compliance, policy enforcement, or release gates.
+```
+
+### Retry Is Only for LLM Steps
+
+The retry mechanism applies only to the LLM pipeline steps:
+
+- `SignalSummarizer`
+- `InsightGenerator`
+
+The deterministic detection steps (DependencyDetector, ImportDetector, ConfigDetector, CodePatternDetector, CapabilityUsageClassifier, CrossRepoAggregator) do not use retry. If a deterministic step fails, it is a bug or a configuration error — not a probabilistic output issue.
+
 ## 9. Stability Evaluation
 
 Stability evaluation is optional and not part of the normal scan path.

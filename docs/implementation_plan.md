@@ -457,15 +457,14 @@ Acceptance criteria:
 
 Scope:
 
-- After each LLM step, run deterministic hard gate checks in code (no LLM):
-  - all evidence_refs cited exist in the evidence package;
-  - all capability_ids cited exist in the catalog;
-  - all repo_ids cited exist in the scan batch;
-  - no hallucinated names (file paths, class names, tenant names not in input);
-  - required schema fields present;
-  - output can be serialized without error.
-- On failure: trigger targeted repair prompt (grounding repair or schema repair) up to max retry (default: 2).
-- On max retry exceeded: fall back to deterministic-only report.
+After each LLM step, run deterministic hard gate checks in code (no LLM):
+
+- all evidence_refs cited exist in the evidence package;
+- all capability_ids cited exist in the catalog;
+- all repo_ids cited exist in the scan batch;
+- no hallucinated names (file paths, class names, tenant names not in input);
+- required schema fields present;
+- output can be serialized without error.
 
 ```text
 PR-021: Add hard gate evaluator (deterministic)
@@ -475,20 +474,46 @@ Acceptance criteria:
 
 - Each check is independently testable.
 - No LLM is used for hard gate validation.
-- Failures produce structured failure reasons.
-- Fallback to deterministic report works.
+- Failures produce structured failure reasons with the specific invalid references listed.
 
-### Feature 5.6: InsightGenerator
+### Feature 5.6: Retry and Repair Prompt Flow
+
+Scope:
+
+- On hard gate failure, select repair prompt type based on failure reason:
+  - invalid evidence_ref / capability_id / repo_id → **Grounding Repair**: resend with explicit list of valid IDs the LLM is allowed to use.
+  - missing required fields (rare with tool use) → **Schema Repair**: resend with schema error list.
+  - claims outside advisory scope → **Scope Repair**: resend with advisory-only rewrite instruction.
+- Max retry count from config (default: 2).
+- Each retry attempt stores: failure reason, repair prompt type, attempt number, raw failed output.
+- On max retry exceeded:
+  - If SignalSummarizer failed: skip InsightGenerator → ReportAssembler uses deterministic-only data → `FAILED_FALLBACK_TO_DETERMINISTIC_REPORT`.
+  - If InsightGenerator failed: ReportAssembler uses SignalSummarizer output only → `ACCEPTED_WITH_WARNING`.
+- The deterministic detection report (classifications, evidence items, metrics) is always available as the fallback baseline.
+
+```text
+PR-022: Add retry and repair prompt flow for LLM steps
+```
+
+Acceptance criteria:
+
+- Grounding repair prompt includes the exact list of valid IDs from the input.
+- Max retry is enforced.
+- Failed outputs are stored with their failure reasons.
+- Fallback produces a valid deterministic report even when both LLM steps fail.
+- Unit tests: grounding failure → repair → success; grounding failure → max retry → fallback.
+
+### Feature 5.7: InsightGenerator
 
 Scope:
 
 - Build InsightGenerator prompt from validated SignalSummarizer output + aggregate metrics.
 - Call LLM with `InsightGeneratorOutput` tool definition.
-- Run hard gate checks after.
+- Run hard gate checks after; trigger retry/repair if needed (see Feature 5.6).
 - Store raw output.
 
 ```text
-PR-022: Implement InsightGenerator LLM step
+PR-023: Implement InsightGenerator LLM step
 ```
 
 Acceptance criteria:
@@ -497,23 +522,25 @@ Acceptance criteria:
 - Hard gate check runs after InsightGenerator.
 - Works with MockLLMClient.
 
-### Feature 5.7: ReportAssembler
+### Feature 5.8: ReportAssembler
 
 Scope:
 
 - Deterministically assemble the final report from validated SignalSummarizer and InsightGenerator outputs.
-- Attach catalog version, prompt versions, model IDs, LLM usage metadata.
+- Handle partial outputs: if InsightGenerator failed and fell back, assemble from SignalSummarizer only.
+- Attach catalog version, prompt versions, model IDs, LLM usage metadata, retry counts, final_status.
 - Produce `FinalReport` for storage and dashboard.
 - No LLM is called.
 
 ```text
-PR-023: Implement deterministic ReportAssembler
+PR-024: Implement deterministic ReportAssembler
 ```
 
 Acceptance criteria:
 
 - Output is deterministic given the same validated inputs.
-- LLM usage metadata (tokens, latency per step) is included.
+- LLM usage metadata (tokens, latency, retry count per step) is included.
+- Partial fallback (SignalSummarizer only) produces a valid report.
 - No LLM is called.
 
 ## 10. Phase 6: Dashboard
@@ -529,7 +556,7 @@ Scope:
 - `GET /api/scans/{scan_batch_id}/report` — returns final report.
 
 ```text
-PR-024: Add FastAPI scan API
+PR-025: Add FastAPI scan API
 ```
 
 Acceptance criteria:
@@ -546,7 +573,7 @@ Scope:
 - Status updated at each pipeline stage.
 
 ```text
-PR-025: Add background scan execution with stage-level status tracking
+PR-026: Add background scan execution with stage-level status tracking
 ```
 
 ### Feature 6.3: Streamlit Scan Trigger Page
@@ -558,7 +585,7 @@ Scope:
 - Show scan status by stage.
 
 ```text
-PR-026: Add Streamlit scan trigger page
+PR-027: Add Streamlit scan trigger page
 ```
 
 ### Feature 6.4: Adoption Overview Page
@@ -572,7 +599,7 @@ Per capability:
 - Confidence distribution.
 
 ```text
-PR-027: Add adoption overview dashboard page
+PR-028: Add adoption overview dashboard page
 ```
 
 Acceptance criteria:
@@ -589,7 +616,7 @@ Scope:
 - Click cell → evidence drill-down.
 
 ```text
-PR-028: Add repo-capability matrix page
+PR-029: Add repo-capability matrix page
 ```
 
 ### Feature 6.6: Evidence Drill-Down Page
@@ -602,7 +629,7 @@ Scope:
 - Show classification status and reasoning.
 
 ```text
-PR-029: Add evidence drill-down page
+PR-030: Add evidence drill-down page
 ```
 
 Acceptance criteria:
@@ -621,7 +648,7 @@ Scope:
 - Show recommended platform actions.
 
 ```text
-PR-030: Add LLM insight and validation status page
+PR-031: Add LLM insight and validation status page
 ```
 
 ### Feature 6.8: Demo Story Mode
@@ -640,7 +667,7 @@ Steps:
 7. Show recommended platform actions.
 
 ```text
-PR-031: Add demo story mode with preloaded scan data
+PR-032: Add demo story mode with preloaded scan data
 ```
 
 Acceptance criteria:
@@ -669,7 +696,7 @@ Scope:
 Each repo is a minimal but realistic Python service (5-15 files).
 
 ```text
-PR-032: Add 5 synthetic Python demo repos and scan_manifest.yaml
+PR-033: Add 5 synthetic Python demo repos and scan_manifest.yaml
 ```
 
 Acceptance criteria:
@@ -687,7 +714,7 @@ Scope:
 - Run regression when detection rules, catalog, or prompts change.
 
 ```text
-PR-033: Add golden dataset and regression test
+PR-034: Add golden dataset and regression test
 ```
 
 Acceptance criteria:
@@ -704,7 +731,7 @@ Scope:
 - Scan summary logged on completion.
 
 ```text
-PR-034: Add structured logging and scan stage timing
+PR-035: Add structured logging and scan stage timing
 ```
 
 ### Feature 7.4: Dockerfile and Docker Compose
@@ -715,7 +742,7 @@ Scope:
 - Docker Compose: API + Streamlit dashboard + local storage.
 
 ```text
-PR-035: Add Dockerfile and docker-compose for local demo
+PR-036: Add Dockerfile and docker-compose for local demo
 ```
 
 Acceptance criteria:
@@ -760,9 +787,9 @@ Target:
 - SignalSummarizer, hard gate evaluator, InsightGenerator, ReportAssembler.
 - Retry/fallback to deterministic report.
 
-Key PRs: PR-017 to PR-023.
+Key PRs: PR-017 to PR-024.
 
-End of week 6 checkpoint: Full scan with LLM produces validated insights. Show retry scenario with MockLLMClient.
+End of week 6 checkpoint: Full scan with LLM produces validated insights. Show grounding repair retry scenario with MockLLMClient. Show fallback to deterministic report when all retries fail.
 
 ### Weeks 7–8: Dashboard, Demo Data, Hardening
 
@@ -773,7 +800,7 @@ Target:
 - 5 synthetic demo repos + golden dataset.
 - Docker, logging.
 
-Key PRs: PR-024 to PR-035.
+Key PRs: PR-025 to PR-036.
 
 End of week 8 checkpoint: One-command demo. Leadership story mode works. Golden dataset regression passes.
 

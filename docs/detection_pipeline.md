@@ -407,6 +407,29 @@ Assembles the final report from validated SignalSummarizer and InsightGenerator 
 - produces `FinalReport` for the evaluator;
 - no LLM is called in this step.
 
+### Retry Flow Between Steps
+
+Each LLM step (SignalSummarizer, InsightGenerator) is followed by a hard gate check. If the check fails, a targeted repair prompt is sent before retrying. The deterministic report is always available as a fallback.
+
+```text
+SignalSummarizer (LLM)
+    -> Hard Gate Check
+        PASS -> continue to InsightGenerator
+        FAIL -> Grounding/Schema Repair Prompt -> retry (max 2)
+            Still FAIL -> skip InsightGenerator
+                       -> ReportAssembler uses deterministic-only data
+                       -> final_status = FAILED_FALLBACK_TO_DETERMINISTIC_REPORT
+
+InsightGenerator (LLM)
+    -> Hard Gate Check
+        PASS -> ReportAssembler
+        FAIL -> Grounding/Schema Repair Prompt -> retry (max 2)
+            Still FAIL -> ReportAssembler uses SignalSummarizer output only
+                       -> final_status = ACCEPTED_WITH_WARNING
+```
+
+See `evaluation.md` section 8a for repair prompt details and per-failure-type retry policy.
+
 ## 13. Stage 11: Evaluation
 
 See `evaluation.md`.
