@@ -208,17 +208,36 @@ Acceptance criteria:
 
 Goal: run catalog-driven detectors and produce weighted detection signals.
 
-### Feature 3.1: Language-Agnostic Detector Interface
+### Feature 3.0: Two-Tier Detection Design
+
+The detection engine operates in two tiers. Both are implemented in Phase 3 but are independently runnable.
+
+**Tier 1 — PlatformNamespaceDetector (generic, no per-capability work)**
+
+Reads `platform_conventions` from the catalog top-level block and runs a single pass over all repos. Produces a `USES_PLATFORM` signal for any repo that imports from, depends on, or configures any platform namespace prefix.
+
+This tier covers capabilities that follow naming conventions and provides immediate breadth visibility without requiring per-capability entries. It is optional — if `platform_conventions` is absent from the catalog, it is skipped silently.
+
+**Tier 2 — Capability-Specific Detectors (per-capability, incremental)**
+
+Run per capability using catalog-defined rules. Required for reinvention detection in all cases, and for adoption detection of capabilities that do not follow naming conventions.
+
+### Feature 3.1: Language-Agnostic Detector Interface and PlatformNamespaceDetector
 
 Scope:
 
 - Define `Detector` interface: `detect(workspace, capability) -> DetectionSignal[]`.
-- Define `DetectionSignal` with signal_type (adoption/reinvention), weight (high/medium/low), evidence_ref, confidence.
+- Define `DetectionSignal` with signal_type (adoption/reinvention/generic_platform), weight (high/medium/low), evidence_ref, confidence.
 - Define `DetectorSuite` runner that runs all registered detectors for a capability and aggregates signals.
 - Individual detector failure is captured, not fatal.
+- Implement `PlatformNamespaceDetector` (Tier 1):
+  - reads `platform_conventions` block from catalog;
+  - scans dependency files, import statements, and config files for any platform namespace prefix;
+  - produces `USES_PLATFORM` signals independent of any specific capability;
+  - skipped silently if `platform_conventions` is absent.
 
 ```text
-PR-009: Add detector interface and suite runner
+PR-009: Add detector interface, suite runner, and PlatformNamespaceDetector (Tier 1)
 ```
 
 Acceptance criteria:
@@ -226,6 +245,8 @@ Acceptance criteria:
 - Interface contains no language-specific logic.
 - Adding a new detector requires only a new class conforming to the interface.
 - Suite runner collects signals from all detectors.
+- `PlatformNamespaceDetector` runs without any per-capability catalog entry.
+- `PlatformNamespaceDetector` is skipped when `platform_conventions` is absent from catalog.
 - Individual failure produces a warning, not a scan failure.
 
 ### Feature 3.2: DependencyDetector (Python)

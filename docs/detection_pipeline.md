@@ -102,15 +102,39 @@ __pycache__/
 
 The system loads a versioned capability catalog.
 
+The catalog has two sections:
+
+**Top-level `platform_conventions` block (optional, Tier 1):**
+
+Defines generic platform namespace rules that apply across all repos without per-capability entries:
+
+```yaml
+platform_conventions:
+  python:
+    approved_import_prefixes:
+      - "company_platform."
+      - "platform_"
+    approved_dependency_prefixes:
+      - "platform-"
+  config_key_prefixes:
+    - "platform."
+```
+
+If present, the `PlatformNamespaceDetector` runs against all repos and produces generic `USES_PLATFORM` signals. This provides breadth visibility — "which repos use the platform at all" — without requiring any per-capability catalog work.
+
+**Per-capability entries (Tier 2):**
+
 Each capability definition provides:
 
 - eligibility rules;
-- adoption patterns;
-- reinvention anti-patterns;
+- adoption patterns with signal weights;
+- reinvention anti-patterns with signal weights;
 - evidence collection rules;
 - minimum evidence requirements.
 
-The scan result must record the catalog version used.
+Reinvention anti-patterns always require manual curation. They cannot be auto-derived.
+
+The scan result must record the catalog version and whether `platform_conventions` was active.
 
 ## 6. Stage 4: Eligibility Detection
 

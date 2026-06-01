@@ -15,7 +15,43 @@ The catalog describes:
 - evidence collection rules;
 - maturity and documentation status.
 
-## 2. Core Concepts
+## 2. Two-Tier Detection Model
+
+Not every platform capability has to be manually cataloged before the system provides value. Detection works in two tiers:
+
+### Tier 1: Platform Namespace Detection (Generic, Optional)
+
+If some platform capabilities follow a consistent naming convention (e.g., packages prefixed with `platform-` or imports from `company_platform.*`), a single generic block at the top of the catalog covers all of them at once.
+
+```yaml
+platform_conventions:
+  python:
+    approved_import_prefixes:
+      - "company_platform."
+      - "platform_"
+    approved_dependency_prefixes:
+      - "platform-"
+  config_key_prefixes:
+    - "platform."
+```
+
+This runs without any per-capability entry and answers: "Does this repo use the platform at all?" A repo matching any prefix gets a generic `USES_PLATFORM` signal. This is useful for broad adoption visibility even before the full catalog is built.
+
+Capabilities that do not follow the naming convention are not covered by Tier 1 and require a specific catalog entry.
+
+### Tier 2: Capability-Specific Detection (Per Capability, Incremental)
+
+Per-capability entries are required for:
+- capabilities that do not follow the platform naming convention;
+- reinvention signal detection (always capability-specific — requires human knowledge of what a custom implementation looks like);
+- eligibility rules;
+- precise adoption confirmation beyond namespace matching.
+
+The catalog is built incrementally. Start with the highest-value capability. The system improves as entries are added.
+
+**Key principle:** Anti-patterns (reinvention signals) always require manual curation. There is no way to auto-derive what a custom reimplementation looks like. A human must define: "if we see `SnowflakeTokenManager` without our wrapper, that is reinvention."
+
+## 3. Core Concepts
 
 ### Capability
 

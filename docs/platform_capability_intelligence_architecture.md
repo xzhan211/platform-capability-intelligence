@@ -103,16 +103,26 @@ Responsibilities:
 
 ### 4.4 Capability Detection Engine
 
-Runs deterministic and optional semantic detectors against the workspace using catalog rules.
+Runs two tiers of detection against the workspace: generic platform namespace detection and capability-specific detection.
 
-Detector types:
+#### Tier 1: PlatformNamespaceDetector (Generic)
 
-- dependency detector: scans `pom.xml`, `build.gradle`, `requirements.txt`, etc.;
-- import detector: scans source imports and packages;
-- config detector: scans YAML, properties, JSON, Terraform, and CI/CD files;
-- template detector: detects platform-provided templates;
-- code pattern detector: looks for class/function names and code structures that suggest custom implementations;
-- optional LLM classifier: classifies ambiguous evidence only when deterministic rules are insufficient.
+Reads `platform_conventions` from the catalog top-level block. Detects any usage of the platform namespace without requiring per-capability entries. Produces a generic `USES_PLATFORM` signal per repo.
+
+Covers capabilities that follow naming conventions. Does not require manual catalog entries for each capability.
+
+#### Tier 2: Capability-Specific Detectors
+
+Run per capability using catalog-defined rules and signal weights:
+
+- **DependencyDetector**: scans `requirements.txt`, `setup.py`, `pyproject.toml`, `pom.xml`, `build.gradle` for approved/banned dependency patterns.
+- **ImportDetector**: scans source imports for approved/banned package paths.
+- **ConfigDetector**: scans YAML, `.env`, properties, JSON, and CI/CD files for approved/banned config keys.
+- **TemplateDetector**: detects platform-provided CI/CD or deployment templates.
+- **CodePatternDetector**: looks for class/function names and code structures that match anti-pattern rules in the catalog.
+- **Optional LLM Classifier**: classifies ambiguous evidence only when deterministic rules produce UNKNOWN and further disambiguation is needed.
+
+All detectors implement a language-agnostic interface: `Detector.detect(workspace, capability) -> DetectionSignal[]`. Adding Java detection means adding new implementations of the same interface.
 
 ### 4.5 Evidence Selector
 
