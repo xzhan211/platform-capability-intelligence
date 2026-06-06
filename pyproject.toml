@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "platform-capability-intelligence"
+version = "0.1.0"
+description = "Cross-repo platform capability adoption intelligence"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+    "click>=8.1",
+    "streamlit>=1.28",
+    "rich>=13.0",
+    "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+bedrock = ["boto3>=1.28"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1"]
+
+[project.scripts]
+platform-capability = "platform_capability.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/platform_capability"]
+
+[tool.hatch.build]
+sources = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=platform_capability --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["platform_capability"]
+omit = ["*/cli.py", "*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100

@@ -84,18 +84,23 @@ Responsibilities:
 - ignore generated and binary files;
 - assign stable file IDs.
 
-Suggested ignored paths:
+Ignored paths (from `config.py` `ignored_dirs`):
 
 ```text
 .git/
-target/
+__pycache__/
+.venv/
+venv/
+env/
+node_modules/
 build/
 dist/
-node_modules/
-.venv/
-__pycache__/
+target/
 .idea/
 .vscode/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 ```
 
 ## 5. Stage 3: Capability Catalog Load
@@ -138,184 +143,141 @@ The scan result must record the catalog version and whether `platform_convention
 
 ## 6. Stage 4: Eligibility Detection
 
-Before calculating adoption, determine whether the capability applies to the repo.
+Before calculating adoption, the `CapabilityUsageClassifier` determines whether the capability applies to the repo by checking the `eligibility_rules` block from the catalog against the workspace content.
 
-Example for Snowflake authentication:
+Example for Platform HTTP Client:
 
-A repository is eligible if it has any of:
+A repository is eligible if any of these match:
+- `requests`, `httpx`, `aiohttp`, or `platform-http-client` found in dependency files
+- an import statement starting with `requests`, `httpx`, or `platform_http_client`
 
-- Snowflake JDBC dependency;
-- Snowflake config keys;
-- files/classes with `Snowflake` in name;
-- SQL warehouse configuration;
-- existing Snowflake connection code.
+Repos with no HTTP-related dependencies (e.g., a pure notification service using only `boto3`) are classified `NOT_ELIGIBLE` and excluded from the adoption rate denominator.
 
-If a repo is not eligible, it should not count against adoption rate.
-
-Classification output:
-
-```text
-repo_id
-capability_id
-eligibility_status: ELIGIBLE | NOT_ELIGIBLE | UNKNOWN
-eligibility_evidence_refs[]
-```
+Eligibility is evaluated inside the classifier (`classification/classifier.py`, `_is_eligible()`). There is no separate eligibility stage — it is the first check inside `classify()`.
 
 ## 7. Stage 5: Adoption Signal Detection
 
-Detect approved platform usage.
+The four detectors run against the workspace and return `DetectionSignal` objects. Each signal has a `signal_type` (adoption or reinvention) and a `weight` (high, medium, low) from the catalog definition.
 
-Signal examples:
-
-- approved dependency exists;
-- approved import exists;
-- approved configuration is present;
-- platform template is referenced;
-- approved client API is used.
-
-For Snowflake authentication:
+**DependencyDetector** — scans `requirements.txt`, `setup.py`, `pyproject.toml`:
 
 ```text
-Dependency: com.company.platform:snowflake-auth
-Import: com.company.platform.snowflake.SnowflakeAuthClient
-Config: platform.snowflake.auth.enabled=true
+platform-http-client==2.1.0  →  ADOPTION / high
 ```
 
-Output:
+**ImportDetector** — scans Python import statements:
 
 ```text
-AdoptionSignal
-- signal_id
-- repo_id
-- capability_id
-- signal_type
-- evidence_ref
-- confidence
+from platform_http_client import PlatformHttpClient  →  ADOPTION / high
+import platform_http_client                          →  ADOPTION / medium
 ```
+
+**CodePatternDetector** — scans class/function names and inline code:
+
+```text
+class RetrySession(requests.Session):  →  REINVENTION / high
+HTTPAdapter(max_retries=...)           →  REINVENTION / high
+```
+
+**PlatformNamespaceDetector** — generic prefix matching from `platform_conventions` block (Tier 1):
+
+```text
+from platform_http_client import ...  →  GENERIC_PLATFORM / medium
+platform-http-client in requirements  →  GENERIC_PLATFORM / medium
+```
+
+Each signal carries an `evidence_ref` pointing to the `EvidenceItem` that triggered it.
 
 ## 8. Stage 6: Reinvention Signal Detection
 
-Detect custom implementations that appear to duplicate platform-provided capabilities.
-
-Signal examples:
-
-- direct use of low-level third-party dependency without platform wrapper;
-- custom class names similar to platform implementation;
-- custom token refresh/authentication logic;
-- repeated integration code across repositories;
-- custom CI/CD logic when standard templates exist.
-
-For Snowflake authentication:
+Reinvention signals are produced by the same four detectors when they match `anti_patterns` from the catalog. Examples for Platform HTTP Client:
 
 ```text
-- net.snowflake:snowflake-jdbc exists
-- platform-snowflake-auth is missing
-- SnowflakeTokenManager.java exists
-- OAuth token refresh logic detected
+requests==2.31.0 in requirements.txt        →  REINVENTION / medium (raw requests)
+class RetrySession(requests.Session)        →  REINVENTION / high   (custom session)
+from requests.adapters import HTTPAdapter   →  REINVENTION / high   (manual retry)
+Retry(total=3, backoff_factor=0.5)          →  REINVENTION / high   (manual retry)
 ```
 
-Output:
-
-```text
-ReinventionSignal
-- signal_id
-- repo_id
-- capability_id
-- signal_type
-- evidence_ref
-- confidence
-```
+All signals are returned as `DetectionSignal` objects with a stable `evidence_ref` pointing to the collected `EvidenceItem`.
 
 ## 9. Stage 7: Evidence Selection
 
-Evidence selection prepares bounded evidence for classification and LLM synthesis.
+Evidence items are collected by the detectors and stored in a dict keyed by `evidence_id`. The `CrossRepoAggregator` selects the top items per repo for inclusion in the `CrossRepoEvidenceSummary` (the bounded LLM input).
 
-Evidence types:
-
-- dependency entries;
-- imports;
-- config keys;
-- file names;
-- selected code snippets;
-- template references;
-- README or onboarding references.
-
-MVP rules:
-
-1. Always include evidence required by the capability catalog.
-2. Prioritize adoption and reinvention signals.
-3. Include short code snippets around detected patterns.
-4. Enforce token budget before LLM call.
-5. Assign evidence IDs to every evidence item.
-
-Evidence item example:
+Evidence item structure (from `models.py`):
 
 ```json
 {
-  "evidence_id": "ev-snowflake-001",
-  "repo_id": "payment-service",
-  "capability_id": "snowflake_auth",
+  "evidence_id": "ev-dep-reinv-a1b2c3d4",
+  "scan_run_id": "run-abc123",
+  "repo_id": "reporting-service",
+  "capability_id": "platform_http_client",
   "source_type": "dependency",
-  "file_path": "pom.xml",
-  "content_summary": "net.snowflake:snowflake-jdbc dependency detected"
+  "file_path": "requirements.txt",
+  "line_start": null,
+  "content_summary": "Reinvention dependency 'requests' found in requirements.txt",
+  "raw_content": "requests"
 }
 ```
 
+`source_type` values: `dependency`, `import`, `code_snippet`, `generic_platform`.
+
 ## 10. Stage 8: Capability Usage Classification
 
-Classify each repository-capability pair.
-
-Recommended deterministic rules:
+The `CapabilityUsageClassifier.classify()` applies deterministic signal weight rules from the catalog:
 
 ```text
-If NOT_ELIGIBLE:
-  status = NOT_ELIGIBLE
+Check EXEMPT first:
+  → If repo_id + capability_id match a valid, non-expired catalog exception → EXEMPT
 
-If approved adoption signal exists:
-  status = ADOPTED
+Check NOT_ELIGIBLE:
+  → If _is_eligible() returns False → NOT_ELIGIBLE
 
-If eligible and reinvention signals exceed threshold:
-  status = CUSTOM_IMPLEMENTATION
+Separate signals by type:
+  adoption_signals  = [s for s in signals if s.signal_type == ADOPTION]
+  reinvention_signals = [s for s in signals if s.signal_type == REINVENTION]
 
-If eligible and no adoption signal exists:
-  status = MISSING
+ADOPTED:
+  → high_adopt >= 1  OR  med_adopt >= 2
 
-If evidence is insufficient:
-  status = UNKNOWN
+CUSTOM_IMPLEMENTATION:
+  → (high_reinv >= 1  OR  med_reinv >= 2)  AND  high_adopt == 0
+
+MISSING:
+  → no adoption signals  AND  high_reinv == 0  AND  med_reinv < 2
+
+UNKNOWN:
+  → everything else (insufficient evidence)
 ```
 
-Each classification must include:
-
-- status;
-- confidence;
-- evidence refs;
-- unknowns;
-- rule version.
+Each result includes `status`, `confidence`, `evidence_refs`, `unknowns`, and `catalog_version`.
 
 ## 11. Stage 9: Cross-Repo Aggregation
 
-Aggregate repository classifications into cross-repo metrics.
+The `CrossRepoAggregator.aggregate()` produces two outputs:
 
-Example metrics:
-
-```text
-Capability Adoption Rate = adopted eligible repos / eligible repos
-Custom Implementation Rate = custom implementation repos / eligible repos
-Missing Adoption Rate = missing repos / eligible repos
-Unknown Rate = unknown repos / total scanned repos
-Tenant Capability Coverage = adopted recommended capabilities / eligible recommended capabilities
-```
-
-Example output:
+**`CrossRepoMetric`** (stored, displayed in dashboard):
 
 ```text
-Snowflake Auth
-- 10 eligible repos
-- 6 adopted
-- 3 custom implementations
-- 1 unknown
-- adoption rate: 60%
+Platform HTTP Client — demo-batch-001
+  eligible_repo_count    : 4
+  adopted_count          : 1
+  custom_implementation  : 2
+  missing_count          : 1
+  unknown_count          : 0
+  exempt_count           : 0
+  not_eligible_count     : 1
+  adoption_rate          : 0.25  (adopted / eligible; EXEMPT excluded)
 ```
+
+**`CrossRepoEvidenceSummary`** (bounded structure, passed to LLM pipeline):
+
+- aggregate metrics
+- per-repo status + confidence + top 3 evidence refs
+- common reinvention patterns extracted across repos
+- unknowns list
+- token count estimate
 
 ## 12. Stage 10: LLM Insight Pipeline (Multi-Step)
 
@@ -327,16 +289,16 @@ Before any LLM call, the CrossRepoAggregator builds a bounded, structured summar
 
 ```json
 {
-  "capability_id": "snowflake_auth",
-  "capability_name": "Snowflake Authentication",
+  "capability_id": "platform_http_client",
+  "capability_name": "Platform HTTP Client",
   "catalog_version": "1.0",
   "scan_batch_id": "demo-batch-001",
   "aggregate_metrics": {
     "eligible_repo_count": 4,
     "adopted_count": 1,
-    "custom_implementation_count": 1,
+    "custom_implementation_count": 2,
     "missing_count": 1,
-    "unknown_count": 1,
+    "unknown_count": 0,
     "exempt_count": 0,
     "adoption_rate": 0.25
   },
@@ -346,81 +308,81 @@ Before any LLM call, the CrossRepoAggregator builds a bounded, structured summar
       "tenant_id": "payments-team",
       "status": "ADOPTED",
       "confidence": "high",
-      "top_evidence_refs": ["ev-001", "ev-002"]
+      "top_evidence_refs": ["ev-dep-adopt-a1b2", "ev-imp-adopt-c3d4"],
+      "key_findings": ["Adoption: Approved dependency: platform-http-client"]
     },
     {
       "repo_id": "reporting-service",
       "tenant_id": "analytics-team",
       "status": "CUSTOM_IMPLEMENTATION",
       "confidence": "high",
-      "top_evidence_refs": ["ev-010", "ev-011", "ev-012"]
+      "top_evidence_refs": ["ev-cls-e5f6", "ev-code-g7h8"],
+      "key_findings": ["Reinvention: Custom class: RetrySession", "Reinvention: Code pattern: HTTPAdapter"]
     }
   ],
   "common_reinvention_patterns": [
-    "snowflake-connector-python used without platform wrapper",
-    "SnowflakeTokenManager class detected"
+    "Reinvention dependency: requests (Raw requests library without platform wrapper)",
+    "Reinvention: Custom class: RetrySession"
   ],
-  "unknowns": [
-    "legacy-analytics-service: insufficient evidence, possible custom auth in legacy module"
-  ]
+  "unknowns": []
 }
 ```
 
 The token budget for the CrossRepoEvidenceSummary is enforced before the LLM call. If the summary exceeds the budget, lower-confidence evidence items are dropped first.
 
-### Step 10.2: SignalSummarizer (LLM, Structured Output)
+### Step 10.2: SignalSummarizer (LLM)
 
-Input: CrossRepoEvidenceSummary + capability catalog entry.
+Implemented in `llm/mock_client.py` (`summarize_signals()`) and orchestrated by `llm/pipeline.py`.
 
-The LLM produces a structured per-capability signal summary.
+Input: `CrossRepoEvidenceSummary` (bounded, deterministically assembled).
 
-Output schema (enforced via tool use):
+The LLM produces a `SignalSummarizerOutput`:
 
 ```json
 {
-  "capability_id": "snowflake_auth",
-  "adoption_pattern_summary": "One repo uses the approved platform dependency and import. Three eligible repos do not use the approved capability.",
-  "reinvention_pattern_summary": "One repo uses snowflake-connector-python directly with a custom SnowflakeTokenManager class.",
-  "evidence_refs": ["ev-010", "ev-011"],
-  "unknowns": ["legacy-analytics-service: classification unclear"],
+  "capability_id": "platform_http_client",
+  "adoption_pattern_summary": "1 repo uses the approved platform-http-client dependency and PlatformHttpClient import.",
+  "reinvention_pattern_summary": "2 repos implement custom HTTP handling: reporting-service has a RetrySession class; legacy-analytics-service uses both requests and httpx without a platform wrapper.",
+  "evidence_refs": ["ev-dep-adopt-a1b2", "ev-dep-reinv-c3d4"],
+  "unknowns": [],
   "confidence": "high"
 }
 ```
 
-Hard gate check after this step: all evidence_refs must exist, capability_id must exist in catalog.
+Hard gate check (in `llm/pipeline.py`): all `evidence_refs` must exist in the evidence package; `capability_id` must exist in catalog. Invalid refs are stripped; the check does not retry for stripped refs.
 
-### Step 10.3: InsightGenerator (LLM, Structured Output)
+### Step 10.3: InsightGenerator (LLM)
 
-Input: validated SignalSummarizer output + aggregate metrics.
+Implemented in `llm/mock_client.py` (`generate_insights()`) and orchestrated by `llm/pipeline.py`.
 
-The LLM produces cross-repo platform-level insights and actionable recommendations.
+Input: validated `SignalSummarizerOutput` + aggregate metrics text.
 
-Output schema (enforced via tool use):
+The LLM produces an `InsightGeneratorOutput`:
 
 ```json
 {
-  "insight_summary": "The Snowflake Auth capability has a 25% adoption rate among eligible repos. One repo implements custom authentication, suggesting onboarding friction for batch-style Snowflake integrations.",
+  "insight_summary": "The Platform HTTP Client capability has a 25% adoption rate among 4 eligible repos. 2 repos implement custom alternatives (reporting-service, legacy-analytics-service). Platform team should prioritize outreach to repos with custom implementations.",
   "recommendations": [
     {
-      "recommendation_id": "rec-001",
+      "recommendation_id": "rec-a1b2c3",
       "priority": "high",
       "target": "reporting-service",
-      "action": "Migrate SnowflakeTokenManager to the platform-snowflake-auth library.",
-      "evidence_refs": ["ev-010", "ev-011"]
+      "action": "Migrate custom RetrySession to platform-http-client. Contact the analytics-team to schedule migration.",
+      "evidence_refs": ["ev-cls-d4e5f6"]
     },
     {
-      "recommendation_id": "rec-002",
+      "recommendation_id": "rec-g7h8i9",
       "priority": "medium",
       "target": "platform-team",
-      "action": "Add a batch-job integration example to Snowflake Auth documentation.",
-      "evidence_refs": ["ev-010"]
+      "action": "Add a migration guide for teams currently using raw requests.",
+      "evidence_refs": []
     }
   ],
-  "unknowns": ["legacy-analytics-service: follow up required to determine auth pattern"]
+  "unknowns": []
 }
 ```
 
-Hard gate check after this step: all evidence_refs exist, all repo_ids cited exist in the scan batch, capability_ids exist in catalog, no unsupported claims.
+Hard gate check: all `evidence_refs` must exist; all `target` values must be a valid `repo_id` from the scan batch or the literal string `"platform-team"`. Hallucinated targets are flagged as warnings and stripped.
 
 ### Step 10.4: ReportAssembler (Deterministic)
 
@@ -442,7 +404,7 @@ SignalSummarizer (LLM)
         FAIL -> Grounding/Schema Repair Prompt -> retry (max 2)
             Still FAIL -> skip InsightGenerator
                        -> ReportAssembler uses deterministic-only data
-                       -> final_status = FAILED_FALLBACK_TO_DETERMINISTIC_REPORT
+                       -> final_status = FAILED_FALLBACK_TO_DETERMINISTIC
 
 InsightGenerator (LLM)
     -> Hard Gate Check
@@ -460,45 +422,46 @@ See `evaluation.md`.
 
 ## 14. Stage 12: Dashboard
 
-Recommended MVP dashboard sections:
+Implemented as a Streamlit app in `dashboard/app.py`. Five pages:
 
-1. Capability overview
-2. Adoption by capability
-3. Tenant/repo matrix
-4. Reimplementation signals
-5. Evidence drill-down
-6. LLM-generated insight with validation status
-7. Recommended platform actions
+1. **Scan** — trigger a scan from a manifest + catalog, or run the demo scan with one click. Load an existing report JSON.
+2. **Adoption Overview** — per-capability metrics: adoption rate, adopted count, custom implementation count, missing count, unknown count, exempt count. Adoption rate denominator excludes NOT_ELIGIBLE and EXEMPT repos.
+3. **Repo Matrix** — grid of repo × capability with status icons. All statuses shown with colour coding.
+4. **Evidence Drill-Down** — select a repo to see every `EvidenceItem` behind its classification: file path, source type, content summary, and raw code snippet.
+5. **LLM Insights** — signal summary, cross-repo insight, prioritised recommendations, validation status, and LLM usage metadata (model, tokens, retries).
 
-## 15. Example End-to-End Scenario
+Launch:
 
-Capability: Snowflake Authentication
+```bash
+uv run streamlit run dashboard/app.py
+```
 
-Input:
+## 15. End-to-End Demo Scenario
 
-- 5 tenant repositories
-- capability catalog entry for Snowflake authentication
+Capability: Platform HTTP Client
+Demo repos: `demo/repos/` (5 synthetic Python services)
+Manifest: `demo/manifest/scan_manifest.yaml`
+Catalog: `demo/catalog/catalog.yaml`
 
-Detection:
+```bash
+uv run platform-capability scan \
+  --manifest demo/manifest/scan_manifest.yaml \
+  --catalog demo/catalog/catalog.yaml
+```
 
-- Repo A uses approved platform dependency -> ADOPTED
-- Repo B uses approved platform dependency -> ADOPTED
-- Repo C uses Snowflake JDBC and custom token refresh -> CUSTOM_IMPLEMENTATION
-- Repo D has Snowflake config but no approved usage -> MISSING
-- Repo E has no Snowflake usage -> NOT_ELIGIBLE
-
-Output:
+Detection results:
 
 ```text
-Snowflake Auth Adoption:
-- Eligible repos: 4
-- Adopted: 2
-- Custom implementation: 1
-- Missing: 1
-- Not eligible: 1
+payment-service          → ADOPTED           (high)   platform-http-client dep + PlatformHttpClient import
+reporting-service        → CUSTOM_IMPLEMENTATION (high)  RetrySession class + HTTPAdapter usage
+reconciliation-service   → MISSING           (medium)  requests dep only, no retry, no platform wrapper
+notification-service     → NOT_ELIGIBLE      (high)   boto3 + jinja2 only, no HTTP client
+legacy-analytics-service → CUSTOM_IMPLEMENTATION (medium) requests + httpx, no platform wrapper
 
-Recommendation:
-- Provide a migration guide for repos using direct Snowflake JDBC.
-- Add a sample batch-job integration template.
-- Follow up with tenant owning Repo C due to custom auth implementation.
+Platform HTTP Client:
+  Eligible repos  : 4
+  Adopted         : 1   (25%)
+  Custom impl     : 2
+  Missing         : 1
+  Not eligible    : 1
 ```

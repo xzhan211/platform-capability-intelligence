@@ -49,6 +49,7 @@ Statuses:
 - `MISSING`
 - `NOT_ELIGIBLE`
 - `UNKNOWN`
+- `EXEMPT`
 
 Checks:
 
@@ -101,7 +102,7 @@ Possible statuses:
 - `ACCEPTED`
 - `ACCEPTED_WITH_WARNING`
 - `RETRY_REQUIRED`
-- `FAILED_FALLBACK_TO_DETERMINISTIC_REPORT`
+- `FAILED_FALLBACK_TO_DETERMINISTIC`
 
 ## 5. Soft Quality Checks
 
@@ -150,17 +151,15 @@ CUSTOM_IMPLEMENTATION / medium:
 
 The project should maintain a small evaluation dataset.
 
-MVP dataset:
+MVP dataset (Platform HTTP Client, located in `demo/repos/`):
 
-1. Repo with approved Snowflake auth usage.
-2. Repo with custom Snowflake auth implementation.
-3. Repo with Snowflake usage but unclear auth pattern.
-4. Repo with no Snowflake usage.
-5. Repo with both approved usage and legacy custom code.
+1. `payment-service` — approved `platform-http-client` dependency + `PlatformHttpClient` import → expected: `ADOPTED / high`
+2. `reporting-service` — `RetrySession` class + `HTTPAdapter` usage → expected: `CUSTOM_IMPLEMENTATION / high`
+3. `reconciliation-service` — `requests` dependency only, no retry, no platform wrapper → expected: `MISSING / medium`
+4. `notification-service` — `boto3` + `jinja2` only, no HTTP client → expected: `NOT_ELIGIBLE / high`
+5. `legacy-analytics-service` — `requests` + `httpx`, no platform wrapper → expected: `CUSTOM_IMPLEMENTATION / medium`
 
-Each repo should have expected classification labels.
-
-This allows regression testing when detection rules, prompts, or catalog definitions change.
+Each repo has expected classification labels. This allows regression testing when detection rules, prompts, or catalog definitions change.
 
 ## 8. LLM Evaluation
 
@@ -327,7 +326,6 @@ llm_usage_metadata
 - output_tokens
 - retry_count
 - latency_ms
-- estimated_cost_when_available
 ```
 
 Cost should be measured from usage data, not guessed in the design.

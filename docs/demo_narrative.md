@@ -2,249 +2,211 @@
 
 ## 1. Demo Goal
 
-The demo should show that the application can identify whether platform capabilities are being adopted across tenant repositories and where teams are reinventing capabilities that the platform already provides.
+Show that the application can identify whether platform capabilities are being adopted across tenant repositories and where teams are reinventing capabilities that the platform already provides.
 
-The demo should not focus on generic code quality. It should focus on platform value:
+The demo does not focus on generic code quality. It focuses on platform value:
 
 > Are our reusable building blocks actually being used, and where do tenants still rebuild things themselves?
 
-## 2. Recommended Demo Story
+## 2. Demo Capability: Platform HTTP Client
 
-Use Snowflake authentication as the primary example.
+The demo uses the **Platform HTTP Client** (`platform-http-client`) as the example capability.
 
-Story:
+The platform provides a standard HTTP client with built-in retry, circuit breaker, and observability. Teams that use it get reliable HTTP calls for free. Teams that don't end up writing their own retry logic — usually inconsistently, often with bugs.
 
-1. The platform provides a reusable Snowflake authentication capability.
-2. Several tenant repositories need Snowflake access.
-3. Some use the platform capability correctly.
-4. Some implement custom authentication/token handling.
-5. One repo has ambiguous Snowflake usage and needs follow-up.
-6. The dashboard shows adoption rate, custom implementation signals, and evidence.
-7. The final recommendation is to improve onboarding material, provide migration templates, and reach out to tenants with custom implementations.
+Capability ID: `platform_http_client`
+Catalog: `demo/catalog/catalog.yaml`
 
 ## 3. Demo Dataset
 
-Use 4-5 synthetic repositories.
+Five synthetic Python microservices. Each illustrates a different detection outcome.
 
-### Repo A: payment-service
+### Repo 1: payment-service
 
-Expected status:
-
-```text
-ADOPTED
-```
+**Tenant:** payments-team
+**Expected status:** `ADOPTED` (high confidence)
 
 Evidence:
+- `requirements.txt` contains `platform-http-client==2.1.0`
+- `src/payment_service/clients/payment_gateway.py` imports `from platform_http_client import PlatformHttpClient, HttpClientConfig`
+- Uses `PlatformHttpClient` to call the payment gateway
 
-- approved platform Snowflake auth dependency;
-- approved import;
-- platform config key.
+### Repo 2: reporting-service
 
-### Repo B: reporting-service
-
-Expected status:
-
-```text
-CUSTOM_IMPLEMENTATION
-```
+**Tenant:** analytics-team
+**Expected status:** `CUSTOM_IMPLEMENTATION` (high confidence)
 
 Evidence:
+- `requirements.txt` contains `requests==2.31.0` (raw library, no platform wrapper)
+- `src/reporting_service/http/custom_session.py` defines `class RetrySession(requests.Session):`
+- Custom retry logic using `HTTPAdapter` and `urllib3.util.retry.Retry`
 
-- Snowflake JDBC dependency;
-- no platform auth dependency;
-- custom `SnowflakeTokenManager` class;
-- token refresh logic.
+### Repo 3: reconciliation-service
 
-### Repo C: reconciliation-service
-
-Expected status:
-
-```text
-MISSING
-```
+**Tenant:** finance-team
+**Expected status:** `MISSING` (medium confidence)
 
 Evidence:
+- `requirements.txt` contains `requests==2.31.0` (makes it eligible)
+- `src/reconciliation_service/fetcher.py` uses plain `requests.get()` with no retry, no platform wrapper
+- No custom retry class — just unprotected HTTP calls
 
-- Snowflake config exists;
-- no approved platform dependency;
-- no strong custom implementation detected.
+### Repo 4: notification-service
 
-### Repo D: notification-service
-
-Expected status:
-
-```text
-NOT_ELIGIBLE
-```
+**Tenant:** comms-team
+**Expected status:** `NOT_ELIGIBLE` (high confidence)
 
 Evidence:
+- `requirements.txt` contains only `boto3`, `jinja2`, `pydantic`
+- Sends email via AWS SES SDK — no HTTP client needed
+- No eligibility signals detected
 
-- no Snowflake dependency;
-- no Snowflake config;
-- no Snowflake source files.
+### Repo 5: legacy-analytics-service
 
-### Repo E: legacy-analytics-service
-
-Expected status:
-
-```text
-UNKNOWN or CUSTOM_IMPLEMENTATION depending on signal strength
-```
+**Tenant:** data-team
+**Expected status:** `CUSTOM_IMPLEMENTATION` (medium confidence)
 
 Evidence:
+- `requirements.txt` contains both `requests==2.28.0` and `httpx==0.24.1`
+- `src/analytics/data_pull.py` uses both libraries inconsistently across sync and async paths
+- No platform wrapper, no unified retry strategy
 
-- some Snowflake config;
-- legacy helper class;
-- insufficient evidence to classify with high confidence.
+## 4. How to Run the Demo
 
-## 4. Demo Flow
+### CLI
+
+```bash
+uv run platform-capability scan \
+  --manifest demo/manifest/scan_manifest.yaml \
+  --catalog demo/catalog/catalog.yaml \
+  --output ./output
+```
+
+### Dashboard
+
+```bash
+uv run streamlit run dashboard/app.py
+```
+
+Open `http://localhost:8501`, go to **Scan**, click **Run Demo Scan**.
+
+## 5. Demo Flow (for Leadership Presentation)
 
 ### Step 1: Introduce the Platform Problem
 
-Message:
+> We already have tools for repo-level code quality. The missing view is cross-repo platform capability adoption. We need to know whether shared platform building blocks are actually being reused across tenants.
 
-```text
-We already have tools for repo-level quality. The missing view is cross-repo platform capability adoption. We need to know whether shared platform building blocks are actually being reused across tenants.
+### Step 2: Show the Capability Catalog
+
+Open `demo/catalog/catalog.yaml` or the Scan page. Show the Platform HTTP Client capability definition:
+
+- Approved dependency: `platform-http-client` (weight: high)
+- Approved import: `platform_http_client.PlatformHttpClient` (weight: high)
+- Anti-pattern: `RetrySession` class (weight: high)
+- Anti-pattern: `HTTPAdapter` usage (weight: high)
+- Eligibility: any repo with `requests`, `httpx`, or `platform-http-client`
+
+> The system is catalog-driven. It cannot claim adoption unless the capability and detection rules are explicitly defined. Detection rules have weights — one high-weight signal is enough to classify.
+
+### Step 3: Run the Scan
+
+```bash
+uv run platform-capability scan \
+  --manifest demo/manifest/scan_manifest.yaml \
+  --catalog demo/catalog/catalog.yaml
 ```
 
-### Step 2: Show Capability Catalog
+> The scan analyzes five tenant repositories and classifies each one against the catalog rules.
 
-Show Snowflake Auth capability definition:
+### Step 4: Show the Adoption Overview
 
-- approved dependency;
-- approved import;
-- config key;
-- anti-patterns;
-- eligibility rules.
+Navigate to **Adoption Overview** in the dashboard:
 
-Message:
-
-```text
-The system is catalog-driven. It cannot claim adoption unless the capability and detection rules are explicitly defined.
+```
+Platform HTTP Client
+Eligible repos : 4
+Adopted        : 1   (25% adoption rate)
+Custom impl    : 2
+Missing        : 1
+Not eligible   : 1
 ```
 
-### Step 3: Run Cross-Repo Scan
+> This gives platform leadership a direct view of whether a shared capability is actually being reused.
 
-Run:
+### Step 5: Show the Evidence Trail
 
-```text
-platform-capability scan --input ./demo-repos --catalog ./capabilities.yaml
-```
-
-Message:
-
-```text
-The scan analyzes multiple tenant repositories and classifies each repo-capability pair.
-```
-
-### Step 4: Show Adoption Overview
-
-Example dashboard:
-
-```text
-Snowflake Authentication
-Eligible repos: 4
-Adopted: 1
-Custom implementation: 1
-Missing: 1
-Unknown: 1
-Not eligible: 1
-```
-
-Message:
-
-```text
-This gives platform leadership a direct view of whether a shared capability is actually being reused.
-```
-
-### Step 5: Show Evidence Trail
-
-Click into `reporting-service`.
+Navigate to **Evidence Drill-Down**. Select `reporting-service`.
 
 Show:
+- `requirements.txt`: `requests==2.31.0` detected (reinvention signal, medium)
+- `src/reporting_service/http/custom_session.py`: `class RetrySession(requests.Session)` detected (reinvention signal, high)
+- Code snippet showing `HTTPAdapter` and `Retry(...)` usage
 
-- `pom.xml`: Snowflake JDBC dependency;
-- missing platform auth dependency;
-- `SnowflakeTokenManager.java`;
-- code snippet around token refresh logic.
+> The custom implementation classification is not an LLM guess. It is backed by concrete evidence: a specific file, a specific class name, a specific code pattern.
 
-Message:
+### Step 6: Show the Repo Matrix
 
-```text
-The custom implementation classification is not an LLM guess. It is backed by concrete evidence.
-```
+Navigate to **Repo Matrix**.
 
-### Step 6: Show LLM Insight
+Show the grid with status icons for each repo × capability combination.
+
+### Step 7: Show LLM Insights
+
+Navigate to **LLM Insights**.
 
 Example insight:
-
-```text
-The strongest platform adoption gap is Snowflake authentication. Among eligible repositories, several do not use the approved platform capability. One repository appears to implement custom token refresh logic. This suggests that onboarding documentation or migration examples for batch-style Snowflake integration may be insufficient.
+```
+The Platform HTTP Client capability has a 25% adoption rate among 4 eligible
+repos. 2 repos implement custom alternatives (reporting-service,
+legacy-analytics-service). The most common reinvention pattern is direct use
+of requests without the platform wrapper. 1 eligible repo is missing the
+capability entirely. Platform team should prioritize outreach to repos with
+custom implementations.
 ```
 
-Message:
+Recommendations shown:
+- [HIGH] reporting-service: Migrate RetrySession to platform-http-client
+- [HIGH] legacy-analytics-service: Migrate inconsistent HTTP usage to platform-http-client
+- [MEDIUM] reconciliation-service: Onboard to platform-http-client
+- [MEDIUM] platform-team: Add migration guide for teams using raw requests
 
-```text
-The LLM is used to synthesize evidence into platform-level insight, not to invent unsupported claims.
-```
+Show the **Validation Status** (ACCEPTED) and evidence coverage — proving the LLM output was validated before display.
 
-### Step 7: Show Evaluation Status
-
-Dashboard should show:
-
-```text
-Validation Status: ACCEPTED
-Evidence Coverage: High
-Unknowns Listed: Yes
-LLM Claims Validated: Passed
-```
-
-Message:
-
-```text
-The report is validated before display. If the LLM mentions unsupported repos or capabilities, the report is rejected or falls back to deterministic output.
-```
+> The LLM synthesizes evidence into platform-level insight, not to invent unsupported claims. Every recommendation traces back to a specific evidence item.
 
 ### Step 8: Show Recommended Platform Actions
 
-Example recommendations:
+The output is actionable for platform teams:
 
-1. Publish a migration guide for teams using direct Snowflake JDBC.
-2. Add a batch-job example to the Snowflake Auth documentation.
-3. Reach out to reporting-service owner to migrate custom token refresh logic.
-4. Add catalog rules for additional Snowflake usage patterns discovered during scan.
+1. Reach out to `reporting-service` owner to migrate `RetrySession` to `platform-http-client`.
+2. Reach out to `legacy-analytics-service` owner to consolidate HTTP usage.
+3. Add a migration guide for teams currently using raw `requests`.
+4. Onboard `reconciliation-service` to the platform capability.
 
-Message:
+## 6. Demo Aha Moment
 
-```text
-The output is actionable for platform teams. It helps decide which capabilities need better onboarding, migration support, or outreach.
 ```
-
-## 5. Demo Aha Moment
-
-The key aha moment is:
-
-```text
 This tool does not just inspect whether one repo has good or bad code.
-It tells us whether the platform's reusable capabilities are actually being adopted across tenants, where teams are rebuilding platform-provided integrations, and what we should improve to make onboarding easier.
+It tells us whether the platform's reusable capabilities are actually being
+adopted across tenants, where teams are rebuilding platform-provided
+integrations, and what we should do to make onboarding easier.
 ```
 
-## 6. Leadership Positioning
+## 7. Leadership Positioning
 
-Use this positioning:
-
-```text
+```
 We are not building another code quality scanner.
-We are building a cross-repo platform capability intelligence layer that helps us measure adoption, detect reinvention, and improve reusable platform building blocks.
+We are building a cross-repo platform capability intelligence layer that
+helps us measure adoption, detect reinvention, and improve reusable
+platform building blocks.
 ```
 
-## 7. Demo Success Criteria
+## 8. Demo Success Criteria
 
 The demo is successful if the audience understands:
 
-- what capabilities the platform provides;
-- which repos/tenants use those capabilities;
-- where custom reinvention is happening;
-- what evidence supports each classification;
+- what capabilities the platform provides and how they are detected;
+- which repos use those capabilities and which do not;
+- where custom reinvention is happening and what the evidence is;
 - what platform actions should be taken next;
-- why this creates better onboarding and stronger platform stickiness.
+- that this is not a black-box AI tool — every claim is backed by evidence.

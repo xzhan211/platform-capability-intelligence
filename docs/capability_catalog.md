@@ -106,89 +106,113 @@ A repository or tenant shows a reinvention signal when it appears to implement c
 
 Not every tenant needs every capability. A repository should only be counted against a capability's adoption rate if it is eligible for that capability.
 
-Example: A service with no Snowflake access should not lower the adoption rate of Snowflake authentication.
+Example: A service that makes no HTTP calls should not lower the adoption rate of the Platform HTTP Client capability.
 
 ## 3. Capability Catalog Schema
 
-Suggested YAML representation (Python-first example):
+The demo catalog (`demo/catalog/catalog.yaml`) uses the **Platform HTTP Client** capability as the reference implementation. The schema below reflects what is actually parsed by `catalog/loader.py`.
 
 ```yaml
-capability_id: snowflake_auth
-name: Snowflake Authentication
-category: data_integration
-owner_team: platform-data
-status: stable
-maturity: stable
 catalog_version: "1.0"
-source: manual           # manual | auto_generated | imported — tracks how this entry was created
-description: Standard platform capability for authenticating to Snowflake.
-documentation_url: https://internal/docs/snowflake-auth
-recommended_for:
-  - services that read from or write to Snowflake
+generated_at: "2026-06-06"
+owner: platform-team
 
-approved_usage_patterns:
-  dependencies:
-    - pattern: "platform-snowflake-auth"
-      weight: high        # sufficient alone to classify ADOPTED
-  imports:
-    - pattern: "platform.snowflake.auth.SnowflakeAuthClient"
-      weight: high
-    - pattern: "platform.snowflake.credentials"
-      weight: medium      # corroborating signal, not sufficient alone
-  config_keys:
-    - pattern: "platform.snowflake.auth.enabled"
-      weight: high
-    - pattern: "platform.snowflake.role"
-      weight: medium
-  templates:
-    - pattern: "platform-snowflake-batch-template"
-      weight: medium
+# Tier 1: generic platform namespace detection (no per-capability work needed)
+platform_conventions:
+  python:
+    approved_import_prefixes:
+      - "platform_http_client"
+      - "platform_"
+    approved_dependency_prefixes:
+      - "platform-"
+  config_key_prefixes:
+    - "platform."
 
-anti_patterns:
-  class_name_patterns:
-    - pattern: "SnowflakeTokenManager"
-      weight: high        # sufficient alone to flag CUSTOM_IMPLEMENTATION
-    - pattern: "SnowflakeCredentialRefresher"
-      weight: high
-    - pattern: "CustomSnowflakeAuth"
-      weight: high
-    - pattern: "*snowflake*auth*"   # case-insensitive wildcard
-      weight: medium
-  dependency_patterns:
-    - pattern: "snowflake-connector-python"
-      note: "raw Snowflake driver without platform wrapper"
-      weight: high
-  code_patterns:
-    - pattern: "snowflake.connector.connect"
-      note: "direct low-level Snowflake connection"
-      weight: high
-    - pattern: "token_refresh"
-      note: "custom token refresh logic near Snowflake usage"
-      weight: medium
+capabilities:
+  - capability_id: platform_http_client
+    name: Platform HTTP Client
+    category: integration
+    owner_team: platform-core
+    status: stable
+    maturity: stable
+    catalog_version: "1.0"
+    source: manual           # manual | auto_generated | imported
+    description: >
+      Standard HTTP client with built-in retry, circuit breaker, and
+      observability. Replaces direct use of requests or httpx.
+    documentation_url: https://internal/docs/platform-http-client
+    recommended_for:
+      - services that call internal or external HTTP APIs
 
+    approved_usage_patterns:
+      dependencies:
+        - pattern: "platform-http-client"
+          weight: high        # one high-weight signal → ADOPTED
+      imports:
+        - pattern: "platform_http_client.PlatformHttpClient"
+          weight: high
+        - pattern: "platform_http_client"
+          weight: medium      # corroborating signal
+
+    anti_patterns:
+      class_name_patterns:
+        - pattern: "RetrySession"
+          weight: high        # one high-weight signal → CUSTOM_IMPLEMENTATION
+          note: "Custom retry session wrapping requests.Session"
+        - pattern: "CustomRetry"
+          weight: medium
+          note: "Custom retry logic class"
+      dependency_patterns:
+        - pattern: "requests"
+          weight: medium
+          note: "Raw requests library without platform wrapper"
+        - pattern: "httpx"
+          weight: medium
+          note: "Raw httpx library without platform wrapper"
+      code_patterns:
+        - pattern: "HTTPAdapter"
+          weight: high
+          note: "Custom HTTPAdapter — manual retry configuration"
+        - pattern: "Retry("
+          weight: high
+          note: "urllib3 Retry object — manual retry configuration"
+
+    eligibility_rules:
+      include_if_dependency:
+        - "requests"
+        - "httpx"
+        - "aiohttp"
+        - "platform-http-client"
+      include_if_import_prefix:
+        - "requests"
+        - "httpx"
+        - "platform_http_client"
+
+    evidence_rules:
+      collect_files:
+        - "requirements.txt"
+        - "setup.py"
+        - "pyproject.toml"
+        - "*.py"
+      max_snippet_lines: 30
+
+    minimum_evidence_required:
+      adoption: 1
+      reinvention: 1
+
+exceptions: []
+```
+
+### Eligibility Rule Field Names
+
+The `eligibility_rules` block uses these field names (as parsed by `catalog/loader.py`):
+
+```yaml
 eligibility_rules:
-  include_if:
-    - dependency: "snowflake-connector-python"
-    - dependency: "platform-snowflake-auth"
-    - config_key_prefix: "snowflake"
-    - file_name_pattern: "*snowflake*"
-    - import_prefix: "snowflake"
-
-evidence_rules:
-  collect_files:
-    - "requirements.txt"
-    - "setup.py"
-    - "pyproject.toml"
-    - "*.cfg"
-    - "*.yaml"
-    - "*.env"
-    - "*snowflake*.py"
-    - "*auth*.py"
-  max_snippet_lines: 40
-
-minimum_evidence_required:
-  adoption: 1              # at least 1 high-weight adoption signal
-  reinvention: 1           # at least 1 high-weight OR 2+ medium-weight signals
+  include_if_dependency:       # package name found in dependency files
+  include_if_import_prefix:    # import statement starts with this prefix
+  include_if_config_key_prefix: # config key starts with this prefix
+  include_if_file_pattern:     # file name matches this glob pattern
 ```
 
 ### Signal Weight Classification Rules
@@ -301,11 +325,11 @@ The `EXEMPT` status requires an entry in the catalog exceptions list (see sectio
 
 ## 7. MVP Catalog
 
-For the first demo, keep the catalog intentionally small: one capability.
+The MVP uses a single capability: **Platform HTTP Client** (`platform_http_client`), defined in `demo/catalog/catalog.yaml`.
 
-The specific capability (e.g., Snowflake authentication, logging wrapper, platform auth) should be chosen based on which one provides the clearest adoption/reinvention story with the demo repos.
+This capability was chosen because HTTP client usage patterns are universal and immediately understandable to any engineering audience. The reinvention story (custom retry logic with `requests.Session`, `HTTPAdapter`, `urllib3.Retry`) is straightforward to demonstrate across the five synthetic demo repos.
 
-The detection engine is catalog-driven and language-agnostic. Switching the MVP capability only requires updating the YAML catalog and the synthetic demo repos.
+The detection engine is catalog-driven and language-agnostic. Adding a second capability requires only a new YAML entry.
 
 ## 8. Versioning
 
@@ -335,15 +359,15 @@ Exceptions are defined in a separate `exceptions.yaml` file or as a top-level se
 ```yaml
 exceptions:
   - repo_id: legacy-analytics-service
-    capability_id: snowflake_auth
+    capability_id: platform_http_client
     reason: "Pre-platform legacy service. Migration planned for Q3 2026."
     approved_by: platform-team
     approved_at: "2026-01-15"
     expires: "2026-09-30"
 
   - repo_id: security-tooling-service
-    capability_id: snowflake_auth
-    reason: "Uses custom auth required by InfoSec for privileged access."
+    capability_id: platform_http_client
+    reason: "Uses custom HTTP client required by InfoSec for mTLS handling."
     approved_by: infosec-team
     approved_at: "2026-03-01"
     expires: null   # no expiry; reviewed annually

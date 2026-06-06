@@ -1,0 +1,34 @@
+scan_batch_id: demo-batch-001
+scan_timestamp: "2026-06-06T09:00:00Z"
+catalog_version: "1.0"
+
+repos:
+  - repo_id: payment-service
+    repo_name: payment-service
+    tenant_id: payments-team
+    archive: ../repos/payment-service.zip
+    branch: main
+
+  - repo_id: reporting-service
+    repo_name: reporting-service
+    tenant_id: analytics-team
+    archive: ../repos/reporting-service.zip
+    branch: main
+
+  - repo_id: reconciliation-service
+    repo_name: reconciliation-service
+    tenant_id: finance-team
+    archive: ../repos/reconciliation-service.zip
+    branch: main
+
+  - repo_id: notification-service
+    repo_name: notification-service
+    tenant_id: comms-team
+    archive: ../repos/notification-service.zip
+    branch: main
+
+  - repo_id: legacy-analytics-service
+    repo_name: legacy-analytics-service
+    tenant_id: data-team
+    archive: ../repos/legacy-analytics-service.zip
+    branch: main

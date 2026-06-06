@@ -29,43 +29,61 @@ The system is evidence-grounded and engineering-controlled. LLMs may interpret a
 ## 3. High-Level Architecture
 
 ```text
-Capability Catalog
+Capability Catalog (YAML)
         |
         v
-Repo Source Adapter
-(Local Upload first, Bitbucket later)
+Scan Manifest (YAML) ──► ScanPipeline (pipeline/scan_pipeline.py)
         |
         v
-Workspace Manager
+WorkspaceManager              (workspace/manager.py)
+  unpack archive, file inventory, language detection
         |
         v
-Capability Detection Engine
+Four Detectors per capability:
+  DependencyDetector          (detectors/dependency.py)
+  ImportDetector              (detectors/import_detector.py)
+  CodePatternDetector         (detectors/code_pattern.py)
+  PlatformNamespaceDetector   (detectors/namespace.py)  ← Tier 1 generic
         |
-        +--> Dependency Detector
-        +--> Import / Package Detector
-        +--> Config Detector
-        +--> Template Detector
-        +--> Code Pattern Detector
-        +--> Optional LLM Classifier
-        |
-        v
-Evidence Selector
+        v  DetectionSignal[] + EvidenceItem[]
         |
         v
-Capability Usage Classifier
+CapabilityUsageClassifier     (classification/classifier.py)
+  deterministic, signal-weight rules
+  → ADOPTED | CUSTOM_IMPLEMENTATION | MISSING | NOT_ELIGIBLE | UNKNOWN | EXEMPT
         |
         v
-Cross-Repo Metrics Engine
+CrossRepoAggregator           (classification/aggregator.py)
+  → CrossRepoMetric + CrossRepoEvidenceSummary (bounded LLM input)
         |
         v
-LLM Insight Pipeline
+LLMPipeline                   (llm/pipeline.py)
+  SignalSummarizer  (llm/mock_client.py or bedrock)
+      ↓ hard gate check (evidence refs, capability IDs)
+  InsightGenerator  (llm/mock_client.py or bedrock)
+      ↓ hard gate check (evidence refs, repo IDs, no hallucinations)
+  ReportAssembler   (deterministic, no LLM)
         |
         v
-Evaluator / Validator
+FinalReport (JSON)            (models.py → output/<batch>.json)
         |
         v
-Dashboard / Reports
+Streamlit Dashboard           (dashboard/app.py)
 ```
+
+## 3a. Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.11 |
+| Package manager | uv (lockfile: `uv.lock`) |
+| Models | Pydantic v2 |
+| Catalog / manifest | PyYAML |
+| CLI | Click + Rich |
+| Dashboard | Streamlit |
+| LLM (default) | Mock client (no credentials needed) |
+| LLM (production) | AWS Bedrock — Claude 3.5 Sonnet |
+| Tests | pytest + pytest-cov (82% coverage) |
 
 ## 4. Main Components
 
@@ -127,12 +145,15 @@ Covers capabilities that follow naming conventions. Does not require manual cata
 
 Run per capability using catalog-defined rules and signal weights:
 
-- **DependencyDetector**: scans `requirements.txt`, `setup.py`, `pyproject.toml`, `pom.xml`, `build.gradle` for approved/banned dependency patterns.
-- **ImportDetector**: scans source imports for approved/banned package paths.
-- **ConfigDetector**: scans YAML, `.env`, properties, JSON, and CI/CD files for approved/banned config keys.
-- **TemplateDetector**: detects platform-provided CI/CD or deployment templates.
+- **DependencyDetector**: scans `requirements.txt`, `setup.py`, `pyproject.toml` for approved/banned dependency patterns.
+- **ImportDetector**: scans Python import statements for approved/banned package paths.
 - **CodePatternDetector**: looks for class/function names and code structures that match anti-pattern rules in the catalog.
-- **Optional LLM Classifier**: classifies ambiguous evidence only when deterministic rules produce UNKNOWN and further disambiguation is needed.
+
+Deferred to Phase 2:
+
+- **ConfigDetector**: will scan YAML, `.env`, properties, JSON, and CI/CD files for approved/banned config keys.
+- **TemplateDetector**: will detect platform-provided CI/CD or deployment templates.
+- **Optional LLM Classifier**: will classify ambiguous evidence only when deterministic rules produce UNKNOWN and further disambiguation is needed.
 
 All detectors implement a language-agnostic interface: `Detector.detect(workspace, capability) -> DetectionSignal[]`. Adding Java detection means adding new implementations of the same interface.
 
@@ -248,27 +269,15 @@ documentation_url
 catalog_version
 ```
 
-### Repository
+### RepoDefinition (scan input)
 
 ```text
 repo_id
-tenant_id
 repo_name
-source_type
-branch
-commit_sha
-language_stack
-last_scanned_at
-```
-
-### Tenant
-
-```text
 tenant_id
-tenant_name
-owner_group
-platform_status
-risk_tier optional
+archive          : path to zip or tar.gz archive
+branch           : default "main"
+commit_sha       : optional
 ```
 
 ### CapabilityDetectionResult
@@ -285,22 +294,26 @@ rule_version
 catalog_version
 evidence_refs[]
 unknowns[]
-exempt_reason (populated when status = EXEMPT)
+exempt_reason    : populated when status = EXEMPT
+adoption_signals[]
+reinvention_signals[]
 ```
 
 ### EvidenceItem
 
+All evidence items are stored in `models.py` and serialized to the `FinalReport` JSON.
+
 ```text
-evidence_id
+evidence_id          : stable hash-based ID
 scan_run_id
 repo_id
 capability_id
-source_type: dependency | import | config | code_snippet | template | llm_classification
+source_type          : dependency | import | code_snippet | generic_platform
 file_path
-line_start
-line_end
-content_summary
-raw_content_pointer optional
+line_start           : optional
+line_end             : optional
+content_summary      : human-readable description of what was detected
+raw_content          : the matching text (snippet, dependency line, import statement)
 ```
 
 ### CrossRepoMetric
@@ -309,72 +322,77 @@ raw_content_pointer optional
 metric_id
 scan_batch_id
 capability_id
-metric_name
-metric_value
-eligible_repo_count
-adopted_repo_count
+eligible_repo_count  : excludes NOT_ELIGIBLE and EXEMPT
+adopted_count
 custom_implementation_count
+missing_count
 unknown_count
+exempt_count
+not_eligible_count
+adoption_rate        : adopted_count / eligible_repo_count
 ```
 
 ## 6. Deployment Modes
 
-### MVP Local/Demo Mode
+### Current: Local CLI + Dashboard
 
-```text
-CLI + local uploaded repo archives + local JSON/SQLite + Streamlit dashboard
+```bash
+# Install
+uv sync
+
+# Run scan
+uv run platform-capability scan --manifest demo/manifest/scan_manifest.yaml --catalog demo/catalog/catalog.yaml
+
+# Run dashboard
+uv run streamlit run dashboard/app.py
 ```
 
-### Service Mode
+Output is written to `./output/report-<scan_batch_id>.json`. No database required — everything is plain JSON files.
+
+### Future: Service Mode
 
 ```text
-FastAPI service + background worker + local or cloud storage
+FastAPI control plane + background worker + cloud storage (S3) + RDS/Postgres
 ```
 
-### Future AWS Mode
+### Future: AWS Production Mode
 
 ```text
-FastAPI control plane + S3 + RDS/Postgres + ECS workers + optional Step Functions orchestration
+FastAPI API + S3 artifact storage + RDS Postgres + ECS Fargate workers + optional Step Functions orchestration + Bedrock LLM
 ```
-
-Step Functions is not required for MVP. It becomes useful when the scan workflow grows into multiple long-running stages across many repositories.
 
 ## 7. Security Considerations
 
-- Source code should remain inside approved internal environments.
-- Repository archives should be encrypted at rest.
-- Prompt inputs and outputs should be treated as sensitive.
-- LLM calls must use approved internal/enterprise provider paths.
-- Secrets should be filtered from evidence packages before LLM calls.
-- Tenant access should be controlled through authorization rules.
+- Repository archives should be treated as sensitive source code.
+- Temporary workspaces are cleaned up after each scan (`WorkspaceManager.cleanup()`).
+- LLM calls should use approved internal/enterprise provider paths (Bedrock recommended for bank environments).
+- Secrets and credentials in source files should be redacted before inclusion in evidence snippets.
 - Audit logs should record who triggered scans and which repos were analyzed.
 
-## 8. MVP Scope
+## 8. What Is Built (v0.1.0)
 
-MVP should support:
+Implemented and tested:
 
-- multi-repo scan via `scan_manifest.yaml` + folder of archives (local upload);
-- one capability in the catalog (specific capability TBD by team);
-- Python repository detection (requirements.txt, imports, config files, class/function name patterns);
-- manually maintained YAML capability catalog with signal weights;
-- deterministic eligibility, adoption signal, and reinvention signal detection;
-- evidence-backed classification: ADOPTED / CUSTOM_IMPLEMENTATION / MISSING / NOT_ELIGIBLE / UNKNOWN / EXEMPT;
-- CrossRepoEvidenceSummary as bounded LLM input;
-- LLM insight pipeline (SignalSummarizer → InsightGenerator → ReportAssembler) with hard gate validation;
-- simple cross-repo adoption dashboard;
-- evidence drill-down from classification to source evidence;
-- exportable report.
+- multi-repo scan via `scan_manifest.yaml` + zip archives;
+- `platform_http_client` as the demo capability (Python repos);
+- four detectors: DependencyDetector, ImportDetector, CodePatternDetector, PlatformNamespaceDetector;
+- deterministic classification: ADOPTED / CUSTOM_IMPLEMENTATION / MISSING / NOT_ELIGIBLE / UNKNOWN / EXEMPT;
+- `CrossRepoAggregator` + `CrossRepoEvidenceSummary`;
+- mock LLM pipeline (SignalSummarizer → InsightGenerator → ReportAssembler);
+- hard gate evaluator with retry and fallback in `llm/pipeline.py`;
+- five-page Streamlit dashboard;
+- CLI (`platform-capability scan`, `platform-capability show`);
+- 104 unit tests, 82% coverage;
+- `uv` for package management with `uv.lock`.
 
-The detector interfaces are language-agnostic. Adding Java detection in Phase 2 requires only new detector implementations, not architecture changes.
+Deferred to Phase 2:
 
-MVP should defer:
-
-- Java detection;
-- Bitbucket integration;
-- git history/churn analysis;
-- portfolio-scale multi-capability reporting;
-- automated migration recommendations;
-- policy enforcement or release gates;
+- Java detection (interfaces are language-agnostic; add new detector implementations);
+- Bitbucket source adapter;
+- additional capabilities in catalog;
+- churn × complexity temporal signal;
 - Backstage/developer portal integration;
 - LLM-as-judge soft evaluation;
-- exception/exempt UI management (data model supports it; UI deferred).
+- exception/exempt management UI;
+- FastAPI service mode;
+- AWS production deployment.

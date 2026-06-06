@@ -1,0 +1,98 @@
+catalog_version: "1.0"
+generated_at: "2026-06-06"
+owner: platform-team
+
+platform_conventions:
+  python:
+    approved_import_prefixes:
+      - "platform_http_client"
+      - "platform_"
+    approved_dependency_prefixes:
+      - "platform-"
+  config_key_prefixes:
+    - "platform."
+
+capabilities:
+  - capability_id: platform_http_client
+    name: Platform HTTP Client
+    category: integration
+    owner_team: platform-core
+    status: stable
+    maturity: stable
+    source: manual
+    description: >
+      Standard platform HTTP client with built-in retry, circuit breaker,
+      authentication, and observability. Replaces raw requests/httpx usage.
+    documentation_url: https://internal/docs/platform-http-client
+    recommended_for:
+      - services that call internal or external HTTP APIs
+
+    approved_usage_patterns:
+      dependencies:
+        - pattern: "platform-http-client"
+          weight: high
+      imports:
+        - pattern: "platform_http_client.PlatformHttpClient"
+          weight: high
+        - pattern: "platform_http_client.HttpClientConfig"
+          weight: medium
+        - pattern: "platform_http_client"
+          weight: medium
+
+    anti_patterns:
+      class_name_patterns:
+        - pattern: "RetrySession"
+          weight: high
+          note: "Custom retry session wrapping requests.Session"
+        - pattern: "CustomHttpSession"
+          weight: high
+          note: "Custom HTTP session class"
+        - pattern: "CustomRetry"
+          weight: medium
+          note: "Custom retry logic class"
+        - pattern: "HttpRetryClient"
+          weight: high
+          note: "Custom HTTP retry client"
+      dependency_patterns:
+        - pattern: "requests"
+          weight: medium
+          note: "Raw requests library without platform wrapper"
+        - pattern: "httpx"
+          weight: medium
+          note: "Raw httpx library without platform wrapper"
+      code_patterns:
+        - pattern: "requests.Session()"
+          weight: medium
+          note: "Direct requests.Session instantiation"
+        - pattern: "HTTPAdapter"
+          weight: high
+          note: "Custom HTTPAdapter — manual retry configuration"
+        - pattern: "Retry("
+          weight: high
+          note: "urllib3 Retry object — manual retry configuration"
+
+    eligibility_rules:
+      include_if_dependency:
+        - "requests"
+        - "httpx"
+        - "aiohttp"
+        - "platform-http-client"
+        - "urllib3"
+      include_if_import_prefix:
+        - "requests"
+        - "httpx"
+        - "platform_http_client"
+
+    evidence_rules:
+      collect_files:
+        - "requirements.txt"
+        - "setup.py"
+        - "pyproject.toml"
+        - "*.py"
+      max_snippet_lines: 30
+
+    minimum_evidence_required:
+      adoption: 1
+      reinvention: 1
+
+exceptions: []
