@@ -1,0 +1,19 @@
+platform_manifest_version: "1.0"
+generated_at: "2026-06-06"
+owner: platform-team
+
+platform_conventions:
+  python:
+    approved_import_prefixes:
+      - "platform_"
+    approved_dependency_prefixes:
+      - "platform-"
+  config_key_prefixes:
+    - "platform."
+
+platform_repos:
+  - repo_id: platform-http-client
+    archive: ../repos/platform-http-client.zip
+    owner_team: platform-core
+    category: integration
+    status: stable

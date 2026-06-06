@@ -69,7 +69,7 @@ def run_scan(manifest: str, catalog: str) -> str:
 st.sidebar.title("🔍 Platform Capability Intelligence")
 page = st.sidebar.radio(
     "Navigate",
-    ["Scan", "Adoption Overview", "Repo Matrix", "Evidence Drill-Down", "LLM Insights"],
+    ["Scan", "Platform Catalog", "Adoption Overview", "Repo Matrix", "Evidence Drill-Down", "LLM Insights"],
 )
 
 # Persist report in session
@@ -87,7 +87,7 @@ if page == "Scan":
     with col1:
         st.subheader("Quick Demo Scan")
         demo_manifest = str(Path(__file__).parent.parent / "demo/manifest/scan_manifest.yaml")
-        demo_catalog = str(Path(__file__).parent.parent / "demo/catalog/catalog.yaml")
+        demo_catalog = str(Path(__file__).parent.parent / "demo/manifest/platform_manifest.yaml")
         st.code(f"Manifest : {demo_manifest}\nCatalog  : {demo_catalog}", language="text")
 
         if st.button("▶ Run Demo Scan", type="primary"):
@@ -124,6 +124,61 @@ if page == "Scan":
             st.success("Report loaded")
         except Exception as e:
             st.error(str(e))
+
+elif page == "Platform Catalog":
+    st.title("📦 Platform Capabilities")
+
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+    from platform_capability.catalog.loader import load_catalog
+
+    demo_platform_manifest = str(Path(__file__).parent.parent / "demo/manifest/platform_manifest.yaml")
+    try:
+        catalog = load_catalog(demo_platform_manifest)
+    except Exception as e:
+        st.error(f"Failed to load catalog: {e}")
+        st.stop()
+
+    st.caption(f"Source: `{demo_platform_manifest}` · {len(catalog.capabilities)} capability(ies) · version {catalog.catalog_version}")
+
+    for cap in catalog.capabilities:
+        status_icon = {"stable": "🟢", "beta": "🟡", "deprecated": "🔴"}.get(cap.status.value, "⚫")
+        with st.expander(f"{status_icon} **{cap.name}** — `{cap.capability_id}`", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            col1.markdown(f"**Status:** {cap.status.value}")
+            col2.markdown(f"**Category:** {cap.category or '—'}")
+            col3.markdown(f"**Owner:** {cap.owner_team or '—'}")
+
+            if cap.description:
+                st.write(cap.description.strip())
+
+            if cap.documentation_url:
+                st.markdown(f"[Documentation]({cap.documentation_url})")
+
+            if cap.recommended_for:
+                st.markdown("**Recommended for:** " + ", ".join(cap.recommended_for))
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                dep_patterns = [p.pattern for p in cap.approved_usage_patterns.dependencies]
+                imp_patterns = [p.pattern for p in cap.approved_usage_patterns.imports]
+                if dep_patterns or imp_patterns:
+                    st.markdown("**Approved Usage Patterns**")
+                    if dep_patterns:
+                        st.caption("Dependencies: " + ", ".join(f"`{p}`" for p in dep_patterns))
+                    if imp_patterns:
+                        st.caption("Imports: " + ", ".join(f"`{p}`" for p in imp_patterns))
+
+            with col_b:
+                elig = cap.eligibility_rules
+                elig_deps = elig.include_if_dependency
+                elig_imp = elig.include_if_import_prefix
+                if elig_deps or elig_imp:
+                    st.markdown("**Eligibility Rules**")
+                    if elig_deps:
+                        st.caption("If dependency: " + ", ".join(f"`{d}`" for d in elig_deps))
+                    if elig_imp:
+                        st.caption("If import prefix: " + ", ".join(f"`{i}`" for i in elig_imp))
 
 elif page == "Adoption Overview":
     st.title("📊 Adoption Overview")
@@ -196,7 +251,7 @@ elif page == "Repo Matrix":
 
     import pandas as pd
     df = pd.DataFrame(rows, columns=header)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
 
     st.divider()
     st.subheader("Legend")
@@ -322,6 +377,6 @@ elif page == "LLM Insights":
             }
             for u in usage
         ])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
     else:
         st.info("No LLM insight available. Run a scan to generate insights.")

@@ -41,6 +41,10 @@ def load_catalog(catalog_path: str | Path) -> CapabilityCatalog:
     with open(path) as f:
         raw = yaml.safe_load(f)
 
+    if "platform_repos" in raw:
+        from platform_capability.catalog.extractor import extract_catalog_from_platform_manifest
+        return extract_catalog_from_platform_manifest(path, raw)
+
     conventions_raw = raw.get("platform_conventions", {})
     py_conv = conventions_raw.get("python", {})
     conventions = PlatformConventions(

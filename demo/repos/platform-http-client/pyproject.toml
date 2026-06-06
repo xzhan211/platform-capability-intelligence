@@ -1,0 +1,63 @@
+[project]
+name = "platform-http-client"
+version = "2.1.0"
+description = "Standard platform HTTP client with built-in retry, circuit breaker, authentication, and observability. Replaces raw requests/httpx usage."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+]
+
+[tool.platform]
+category = "integration"
+owner_team = "platform-core"
+status = "stable"
+documentation_url = "https://internal/docs/platform-http-client"
+recommended_for = [
+    "services that call internal or external HTTP APIs",
+]
+
+[tool.platform.eligibility_rules]
+include_if_dependency = ["requests", "httpx", "aiohttp", "platform-http-client", "urllib3"]
+include_if_import_prefix = ["requests", "httpx", "platform_http_client"]
+
+[[tool.platform.anti_patterns.class_name_patterns]]
+pattern = "RetrySession"
+weight = "high"
+note = "Custom retry session wrapping requests.Session"
+
+[[tool.platform.anti_patterns.class_name_patterns]]
+pattern = "CustomHttpSession"
+weight = "high"
+note = "Custom HTTP session class"
+
+[[tool.platform.anti_patterns.class_name_patterns]]
+pattern = "HttpRetryClient"
+weight = "high"
+note = "Custom HTTP retry client"
+
+[[tool.platform.anti_patterns.dependency_patterns]]
+pattern = "requests"
+weight = "medium"
+note = "Raw requests library without platform wrapper"
+
+[[tool.platform.anti_patterns.dependency_patterns]]
+pattern = "httpx"
+weight = "medium"
+note = "Raw httpx library without platform wrapper"
+
+[[tool.platform.anti_patterns.code_patterns]]
+pattern = "requests.Session()"
+weight = "medium"
+note = "Direct requests.Session instantiation"
+
+[[tool.platform.anti_patterns.code_patterns]]
+pattern = "HTTPAdapter"
+weight = "high"
+note = "Custom HTTPAdapter — manual retry configuration"
+
+[[tool.platform.anti_patterns.code_patterns]]
+pattern = "Retry("
+weight = "high"
+note = "urllib3 Retry object — manual retry configuration"

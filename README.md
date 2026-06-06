@@ -30,7 +30,7 @@ After detection, an LLM synthesizes cross-repo insights and produces actionable 
 ```
 platform-capability-intelligence/
 ├── src/platform_capability/    # Core library
-│   ├── catalog/                # Capability catalog loader
+│   ├── catalog/                # Capability catalog loader + platform repo extractor
 │   ├── workspace/              # Archive extraction, manifest parsing
 │   ├── detectors/              # Dependency, import, code pattern, namespace detectors
 │   ├── classification/         # Classifier, cross-repo aggregator
@@ -38,10 +38,14 @@ platform-capability-intelligence/
 │   └── pipeline/               # End-to-end scan orchestrator
 ├── dashboard/app.py            # Streamlit dashboard
 ├── demo/
-│   ├── catalog/catalog.yaml    # Platform HTTP Client capability definition
-│   ├── manifest/               # Demo scan manifest
-│   └── repos/                  # 5 synthetic Python microservices
-├── tests/                      # Unit tests (82% coverage)
+│   ├── catalog/catalog.yaml    # Static capability catalog (hand-authored)
+│   ├── manifest/
+│   │   ├── scan_manifest.yaml      # Consumer repos to scan
+│   │   └── platform_manifest.yaml  # Platform repos to extract catalog from
+│   └── repos/
+│       ├── platform-http-client/   # Platform library source (catalog source)
+│       └── <5 consumer services>   # Synthetic tenant microservices
+├── tests/                      # Unit tests (83% coverage)
 └── docs/                       # Architecture and design docs
 ```
 
@@ -70,7 +74,7 @@ uv sync
 ```bash
 uv run platform-capability scan \
   --manifest demo/manifest/scan_manifest.yaml \
-  --catalog demo/catalog/catalog.yaml \
+  --catalog demo/manifest/platform_manifest.yaml \
   --output ./output
 ```
 
@@ -79,7 +83,7 @@ Expected output:
 ```
 Platform Capability Intelligence
 Manifest : demo/manifest/scan_manifest.yaml
-Catalog  : demo/catalog/catalog.yaml
+Catalog  : demo/manifest/platform_manifest.yaml
 Output   : ./output
 
 Running scan...
@@ -221,14 +225,95 @@ Signal weights drive classification deterministically:
 
 ---
 
+## Catalog Sources
+
+The `--catalog` flag accepts two formats, auto-detected by file content.
+
+### Option A: Static YAML (default)
+
+```bash
+uv run platform-capability scan \
+  --manifest demo/manifest/scan_manifest.yaml \
+  --catalog demo/catalog/catalog.yaml
+```
+
+You write detection rules (approved patterns, anti-patterns, eligibility rules) by hand in `catalog.yaml`. Required for anti-patterns, which cannot be inferred from code.
+
+### Option B: Extract from Platform Repos
+
+```bash
+uv run platform-capability scan \
+  --manifest demo/manifest/scan_manifest.yaml \
+  --catalog demo/manifest/platform_manifest.yaml
+```
+
+Point `--catalog` at a `platform_manifest.yaml` instead. The tool scans each platform repo's source code and automatically derives:
+
+| Extracted from | Produces |
+|---|---|
+| `pyproject.toml [project].name` | `capability_id`, dependency pattern (high weight) |
+| `pyproject.toml [project].description` | `description` |
+| `__init__.py __all__` | per-export import patterns (high weight) |
+| module name | module-level import pattern (medium weight) |
+| `[tool.platform.eligibility_rules]` | eligibility rules (falls back to package name only if absent) |
+| `[tool.platform.anti_patterns]` | reinvention signals (empty if absent) |
+| `[tool.platform]` other fields | `owner_team`, `documentation_url`, `recommended_for` |
+| per-repo metadata in manifest | `category`, `status`, `owner_team` |
+
+Eligibility rules and anti-patterns are declared in the platform repo's own `pyproject.toml` — the platform team knows what counts as reinvention:
+
+```toml
+[tool.platform.eligibility_rules]
+include_if_dependency = ["requests", "httpx", "platform-http-client"]
+include_if_import_prefix = ["requests", "httpx", "platform_http_client"]
+
+[[tool.platform.anti_patterns.class_name_patterns]]
+pattern = "RetrySession"
+weight = "high"
+note = "Custom retry session wrapping requests.Session"
+
+[[tool.platform.anti_patterns.code_patterns]]
+pattern = "HTTPAdapter"
+weight = "high"
+note = "Custom HTTPAdapter — manual retry configuration"
+```
+
+**Platform manifest format:**
+
+```yaml
+platform_manifest_version: "1.0"
+owner: platform-team
+
+platform_conventions:
+  python:
+    approved_import_prefixes: ["platform_"]
+    approved_dependency_prefixes: ["platform-"]
+  config_key_prefixes: ["platform."]
+
+platform_repos:
+  - repo_id: platform-http-client
+    archive: ../repos/platform-http-client.zip
+    owner_team: platform-core
+    category: integration
+    status: stable
+```
+
 ## Adding Your Own Capability
 
-1. Add an entry to `demo/catalog/catalog.yaml` (or create a new catalog file)
+**With static catalog:**
+1. Add an entry to `demo/catalog/catalog.yaml`
 2. Define `approved_usage_patterns`, `anti_patterns`, and `eligibility_rules`
 3. Add your repos to `demo/manifest/scan_manifest.yaml`
 4. Run the scan
 
-No code changes needed. The detection engine reads everything from the catalog YAML.
+**With platform repo extraction:**
+1. Ensure your platform library has a `pyproject.toml` with `[project].name` and `[project].description`
+2. Ensure `src/<module>/__init__.py` has `__all__` listing public exports
+3. Declare `[tool.platform.eligibility_rules]` and `[tool.platform.anti_patterns]` in `pyproject.toml`
+4. Add the repo to `demo/manifest/platform_manifest.yaml`
+5. Run the scan with `--catalog demo/manifest/platform_manifest.yaml`
+
+No code changes needed in either case.
 
 ---
 

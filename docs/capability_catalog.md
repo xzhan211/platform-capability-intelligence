@@ -17,19 +17,77 @@ The catalog describes:
 
 ### How the App Learns What the Platform Provides
 
-The app only knows what is registered in the catalog. There are three realistic sources:
+The app only knows what is registered in the catalog. Two catalog sources are supported, selected automatically based on file content.
 
-| Source | What it covers | When to use |
-|---|---|---|
-| **Manual YAML** | Everything; required for reinvention anti-patterns | Always needed for anti-patterns; sufficient for MVP |
-| **Artifact registry import** (Phase 2) | Platform-published packages → adoption signals auto-populated | When platform publishes to Artifactory, private PyPI, or internal Maven |
-| **Developer portal import** (Phase 2) | Capability metadata from Backstage/Cortex/OpsLevel | When the org already maintains a service/capability catalog |
+#### Source A: Static YAML (`catalog.yaml`)
 
-For MVP, catalog entries are written manually by the platform team. This is intentional: it forces explicit definition of what counts as adoption and what counts as reinvention, rather than relying on inference.
+The platform team writes detection rules by hand. This is the only source that supports anti-patterns.
 
-**Anti-patterns always require manual curation.** There is no way to auto-derive what a custom reimplementation looks like. A platform team member must define this knowledge explicitly.
+```
+--catalog demo/catalog/catalog.yaml
+```
 
-For Phase 2, a `CatalogBootstrapper` can query the internal artifact registry to auto-generate skeleton entries with adoption signals pre-filled. The platform team then reviews and completes the anti-pattern and eligibility sections before promoting status from `draft` to `active`.
+Required fields per capability: `approved_usage_patterns`, `anti_patterns`, `eligibility_rules`. See the schema in section 3.
+
+#### Source B: Platform Repo Extraction (`platform_manifest.yaml`)
+
+Point `--catalog` at a `platform_manifest.yaml` instead of a `catalog.yaml`. The tool opens each platform library's archive and derives the catalog automatically.
+
+```
+--catalog demo/manifest/platform_manifest.yaml
+```
+
+`load_catalog()` auto-detects the format: if the file contains a `platform_repos:` key, it routes to the extractor; otherwise it parses as a classic catalog YAML.
+
+**What is extracted automatically:**
+
+| Source in platform repo | Derived catalog field |
+|---|---|
+| `pyproject.toml [project].name` | `capability_id` (underscored), dependency pattern (HIGH weight) |
+| `pyproject.toml [project].description` | `description` |
+| `__init__.py __all__` | per-export import patterns (HIGH weight) |
+| module name | module import pattern (MEDIUM weight), `eligibility_rules` |
+| `[tool.platform]` in pyproject.toml | `owner_team`, `documentation_url`, `recommended_for` |
+| per-repo keys in platform manifest | `category`, `status`, `owner_team` |
+
+**What cannot be extracted:**
+
+Anti-patterns (reinvention signals) are always left empty when extracting from platform repos. There is no way to infer what a custom reimplementation looks like by reading the platform library itself — that knowledge must come from a human. Use static YAML if reinvention detection is needed.
+
+**Platform manifest format:**
+
+```yaml
+platform_manifest_version: "1.0"
+owner: platform-team
+
+platform_conventions:
+  python:
+    approved_import_prefixes: ["platform_"]
+    approved_dependency_prefixes: ["platform-"]
+  config_key_prefixes: ["platform."]
+
+platform_repos:
+  - repo_id: platform-http-client
+    archive: ../repos/platform-http-client.zip
+    owner_team: platform-core
+    category: integration
+    status: stable
+```
+
+**Required platform repo layout:**
+
+```
+platform-http-client/
+├── pyproject.toml               ← [project].name, description, version
+│                                   [tool.platform] for catalog metadata
+└── src/
+    └── platform_http_client/
+        └── __init__.py          ← __all__ = ["PlatformHttpClient", ...]
+```
+
+If `pyproject.toml` is absent the extractor falls back to `setup.py` (regex parsing of `name=` and `version=`). If no packaging file is found the repo directory name is used as the package name.
+
+If `__init__.py` has no `__all__`, the extractor falls back to all top-level `class` and `def` names that do not start with `_`.
 
 ## 2. Two-Tier Detection Model
 
@@ -258,25 +316,36 @@ Recommended lifecycle states:
 
 Only `beta` and `stable` capabilities are included in adoption rate calculations.
 
-### Auto-Generated Entry Example (Phase 2)
+### Extracted Entry Example
 
-When a `CatalogBootstrapper` queries the internal artifact registry, it produces skeleton entries like this:
+When `source: platform_repo` is set, the extractor produces entries equivalent to:
 
 ```yaml
-capability_id: platform-kafka-client
-name: platform-kafka-client
-source: auto_generated
-status: draft              # excluded from scoring until reviewed and promoted
-auto_generated_at: "2026-06-01"
+capability_id: platform_http_client
+name: Platform Http Client
+source: platform_repo      # set automatically by the extractor
+status: stable
+description: "Standard platform HTTP client with retry and observability."
 approved_usage_patterns:
   dependencies:
-    - pattern: "platform-kafka-client"
-      weight: high         # auto-populated from package name in artifact registry
-anti_patterns: []          # REQUIRES HUMAN COMPLETION before promotion to beta/stable
-eligibility_rules: []      # REQUIRES HUMAN COMPLETION before promotion to beta/stable
+    - pattern: "platform-http-client"
+      weight: high         # from pyproject.toml [project].name
+  imports:
+    - pattern: "platform_http_client"
+      weight: medium       # module-level pattern
+    - pattern: "platform_http_client.PlatformHttpClient"
+      weight: high         # from __init__.py __all__
+    - pattern: "platform_http_client.HttpClientConfig"
+      weight: high
+anti_patterns: []          # always empty — requires human completion
+eligibility_rules:
+  include_if_dependency:
+    - "platform-http-client"
+  include_if_import_prefix:
+    - "platform_http_client"
 ```
 
-The platform team reviews auto-generated entries, adds anti-patterns and eligibility rules, then changes status to `beta` or `stable` to activate detection.
+To add reinvention detection, supplement with a static `catalog.yaml` entry that adds `anti_patterns` and merge the two before running the scan, or extend the platform manifest with a future `anti_patterns_overlay` field.
 
 ## 5. Detection Signal Types
 
